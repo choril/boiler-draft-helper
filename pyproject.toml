@@ -1,7 +1,16 @@
 [project]
 name = "boiler-draft-helper"
 version = "0.1.0"
-description = "Add your description here"
+description = "锅炉膛燃烧负压平衡优化项目"
 readme = "README.md"
-requires-python = ">=3.14"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2.6",
+    "openpyxl>=3.1.5",
+    "pandas>=2.3.3",
+    "pyarrow>=23.0.1",
+    "scikit-learn>=1.7.2",
+    "tqdm>=4.66.4",
+    "psutil>=5.9.8",
+    "nvidia-ml-py>=12.0.0",
+]

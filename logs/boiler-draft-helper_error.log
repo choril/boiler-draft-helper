@@ -1,0 +1,20 @@
+2026-03-05 17:04:03 - boiler-draft-helper - ERROR - data_quality.py:248 - 数据文件不存在: data/output/all_data.feather
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年02月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2024年12月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年11月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年01月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年09月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年05月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年03月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年06月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年10月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年07月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年04月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2024年11月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年08月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2024年10月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:46:57 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2025年12月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:47:07 - boiler-draft-helper - ERROR - data_loader.py:242 - 处理文件 锅炉2号机组-60秒2026年01月-online.xlsx 时出错: name 'clean_dataframe' is not defined
+2026-03-07 12:47:07 - boiler-draft-helper - ERROR - data_loader.py:401 - 未加载到任何有效数据
+2026-03-07 12:56:49 - boiler-draft-helper - ERROR - data_loader.py:432 - ❌ 未加载到任何有效数据
+2026-03-07 13:13:32 - boiler-draft-helper - ERROR - data_loader.py:445 - ❌ 未加载到任何有效数据

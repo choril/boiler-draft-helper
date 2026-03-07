@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Documentation
+docs/
+
+# Data
+data/
+
+# Trae
+.trae/
+
+# Claude
+.claude/
