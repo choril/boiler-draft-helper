@@ -5,13 +5,13 @@
 import os
 import json
 import argparse
-from numpy import clip
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List
 from logger import get_logger
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+from event_period_cleaner import EventPeriodCleaner, load_intervention_records
 
 
 LOGGER = get_logger()
@@ -23,8 +23,10 @@ class Config:
     def __init__(self):
         self.script_dir = Path(__file__).resolve().parent
         self.project_root = self.script_dir.parent
-        self.data_dir = self.project_root / "data" / "锅炉2号机组-60秒-online"
-        self.output_dir = self.project_root / "data" / "output"
+        self.data_dir = (
+            self.project_root / "data" / "川宁项目4锅炉2号机组-60秒-20260308"
+        )
+        self.output_dir = self.project_root / "output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.param_file = self._find_param_file()
@@ -35,21 +37,46 @@ class Config:
 
     def _find_param_file(self) -> Path:
         """查找参数文件"""
-        files = list((self.project_root / "data").glob("*参数说明*.xlsx"))
+        files = list((self.project_root / "data").glob("*参数配置*.xlsx"))
         if files:
             return files[0]
         raise FileNotFoundError("未找到参数文件")
 
-    def load_param_dict(self) -> Dict:
-        """加载参数配置字典"""
-        config = pd.read_excel(self.param_file, sheet_name="config", header=1)
-        config = config.dropna(subset=["点名"])
-        return {
-            str(row["点名"]): {
-                k: (None if pd.isna(v) else v) for k, v in row.items() if k != "点名"
-            }
-            for _, row in config.iterrows()
-        }
+    def load_param_dict(self) -> tuple[Dict, List[str]]:
+        """加载参数配置字典 - 从参数配置文件读取"""
+        try:
+            config = pd.read_excel(
+                self.param_file, sheet_name="config", header=1, engine="openpyxl"
+            )
+            config = config.dropna(subset=["点名"])
+
+            field_count = len(config)
+            unique_count = config["点名"].nunique()
+            LOGGER.info(
+                f"参数配置：字段数 = {field_count}, 唯一点名数 = {unique_count}"
+            )
+
+            duplicate_points = []
+            if field_count != unique_count:
+                duplicates = config[config.duplicated(subset=["点名"], keep=False)]
+                duplicate_points = duplicates["点名"].unique().tolist()
+                LOGGER.warning(f"发现 {len(duplicate_points)} 个重复的点名：")
+                for point_name in duplicate_points:
+                    LOGGER.warning(f"  * {point_name}")
+
+            param_dict = {}
+            for _, row in config.iterrows():
+                point_name = str(row["点名"])
+                param_dict[point_name] = {
+                    k: (None if pd.isna(v) else v)
+                    for k, v in row.items()
+                    if k != "点名" and "Unnamed" not in k
+                }
+
+            return param_dict, duplicate_points
+        except Exception as e:
+            LOGGER.error(f"读取参数配置文件失败：{e}")
+            return {}, []
 
     def save_param_dict(self, param_dict: Dict):
         """保存参数配置字典"""
@@ -60,8 +87,9 @@ class Config:
 class DataLoader:
     """数据加载类 - 负责从 Excel 文件中读取和合并数据"""
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, duplicate_points: List[str] = None):
         self.data_dir = data_dir
+        self.duplicate_points = duplicate_points or []
 
     def read_single_day(self, file: Path, sheet: str) -> pd.DataFrame:
         """读取单个工作表"""
@@ -74,26 +102,32 @@ class DataLoader:
             df = df.rename(columns={df.columns[0]: "TIME"})
             df.drop(0, inplace=True, errors="ignore")
 
-            if self._is_invalid_2026_jan(df, file):
-                return pd.DataFrame()
+            df = self._remove_duplicate_columns(df)
 
             return df
         except Exception as e:
             LOGGER.error(f"读取文件 {file.name} 页签 {sheet} 失败：{e}")
             return pd.DataFrame()
 
-    def _is_invalid_2026_jan(self, df: pd.DataFrame, file: Path) -> bool:
-        """检查是否为无效的 2026 年 1 月数据（缓存数据）"""
-        if df.empty or "TIME" not in df or "2026年01月" in file.name:
-            return False
+    def _remove_duplicate_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """删除重复的列（pandas自动重命名为 .1, .2 等）"""
+        if not self.duplicate_points:
+            return df
 
-        try:
-            df["TIME"] = pd.to_datetime(df["TIME"])
-            is_2026_jan = (df["TIME"].dt.year == 2026) & (df["TIME"].dt.month == 1)
-            return is_2026_jan.all()
-        except Exception as e:
-            LOGGER.warning(f"解析时间戳失败：{e}")
-            return False
+        cols_to_drop = []
+        for col in df.columns:
+            if col in ["TIME", "source_file"]:
+                continue
+
+            for dup_point in self.duplicate_points:
+                if col.startswith(f"{dup_point}."):
+                    cols_to_drop.append(col)
+                    break
+
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
+        return df
 
     def process_file(self, file: Path) -> pd.DataFrame:
         """处理单个文件"""
@@ -105,48 +139,33 @@ class DataLoader:
                 LOGGER.warning(f"文件 {file.name} 中没有找到有效的数字页签")
                 return pd.DataFrame()
 
-            if "2026年01月" in file.name:
-                return self._process_2026_jan_file(file, valid_sheets)
-            else:
-                return self._process_normal_file(file, valid_sheets)
+            valid_sheets.sort(key=int)
+
+            all_dfs = []
+            for sheet in valid_sheets:
+                df = self.read_single_day(file, sheet)
+                if not df.empty:
+                    df["source_file"] = file.name
+                    all_dfs.append(self._clean_dataframe(df))
+
+            if not all_dfs:
+                LOGGER.warning(f"文件 {file.name} 中没有找到有效的数据页签")
+                return pd.DataFrame()
+
+            return pd.concat(all_dfs, ignore_index=True)
         except Exception as e:
             LOGGER.error(f"处理文件 {file.name} 时出错：{e}")
             return pd.DataFrame()
 
-    def _process_2026_jan_file(self, file: Path, sheets: List[str]) -> pd.DataFrame:
-        """处理 2026 年 1 月文件（保留所有页签）"""
-        day_dfs = []
-        for sheet in sheets:
-            df = self.read_single_day(file, sheet)
-            if not df.empty:
-                day_dfs.append(df)
-
-        if not day_dfs:
-            return pd.DataFrame()
-
-        combined = pd.concat(day_dfs, ignore_index=True)
-        combined["source_file"] = file.name
-        return self._clean_dataframe(combined)
-
-    def _process_normal_file(self, file: Path, sheets: List[str]) -> pd.DataFrame:
-        """处理普通文件（只保留最后一个有效页签）"""
-        sheets.sort(key=int, reverse=True)
-
-        for sheet in sheets:
-            df = self.read_single_day(file, sheet)
-            if not df.empty:
-                df["source_file"] = file.name
-                return self._clean_dataframe(df)
-
-        LOGGER.warning(f"文件 {file.name} 中没有找到有效的数据页签")
-        return pd.DataFrame()
-
     def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """清洗数据框，转换数值类型"""
-        exclude_cols = {"TIME", "source_file"}
+        THRESHOLD = 1e-10
+        exclude_cols = ["TIME", "source_file"]
         for col in df.columns:
             if col not in exclude_cols:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+                mask = df[col].abs() < THRESHOLD
+                df.loc[mask, col] = 0
         return df.infer_objects(copy=False)
 
     def load_all_months(self) -> pd.DataFrame:
@@ -188,36 +207,53 @@ class DataLoader:
         final_df["TIME"] = pd.to_datetime(final_df["TIME"])
         final_df = final_df.sort_values(by="TIME").reset_index(drop=True)
 
-        self._remove_empty_rows(final_df)
-        self._remove_invalid_dates(final_df)
+        final_df = self._remove_empty_rows(final_df)
 
         return final_df
 
     def _remove_empty_rows(self, df: pd.DataFrame):
-        """删除空值行"""
+        """删除空值行和零值行"""
+
+        # 删除零值和空值加起来超过阈值的行
+        df = self._remove_zero_and_nan_rows(df)
+
         rows_before = len(df)
-        df.dropna(how="all", inplace=True)
-        df.dropna(
-            subset=[col for col in df.columns if col != "source_file"], inplace=True
-        )
+        # 关键列存在空值则删除整行
+        critical_cols = ["TIME", "D62AX002", "MSFLOW"]
+        df.dropna(subset=critical_cols, inplace=True)
         rows_after = len(df)
         LOGGER.info(
-            f"已清空空值行：{rows_before} -> {rows_after} (删除了 {rows_before - rows_after} 行)"
+            f"已删除关键列存在空值的行：{rows_before} -> {rows_after} (删除了 {rows_before - rows_after} 行)"
         )
 
-    def _remove_invalid_dates(self, df: pd.DataFrame):
-        """删除已知异常日期"""
-        rows_before = len(df)
-        mask = ~(
-            (df["TIME"].dt.year == 2026)
-            & (df["TIME"].dt.month == 1)
-            & (df["TIME"].dt.day == 27)
+        return df
+
+    def _remove_zero_and_nan_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """删除数值列大多为零或NaN的行"""
+        numeric_cols = df.select_dtypes(include=["number"]).columns
+        numeric_cols = [
+            col for col in numeric_cols if col not in ["TIME", "source_file"]
+        ]
+
+        if not numeric_cols:
+            return df
+
+        threshold = len(numeric_cols) // 4
+
+        is_zero_matrix = df[numeric_cols] == 0
+        is_nan_matrix = df[numeric_cols].isna()
+        zero_or_nan_counts_per_row = is_zero_matrix.sum(axis=1) + is_nan_matrix.sum(
+            axis=1
         )
-        df.drop(df[~mask].index, inplace=True)
-        rows_after = len(df)
-        LOGGER.info(
-            f"已清除 2026 年 1 月 27 日的数据：{rows_before} -> {rows_after} (删除了 {rows_before - rows_after} 行)"
-        )
+
+        rows_to_drop_mask = zero_or_nan_counts_per_row >= threshold
+        drop_count = rows_to_drop_mask.sum()
+
+        if drop_count > 0:
+            df = df[~rows_to_drop_mask].reset_index(drop=True)
+            LOGGER.info(f"已删除零值和空值列数 >= {threshold} 的行：{drop_count} 行")
+
+        return df
 
 
 class DataCleaner:
@@ -226,10 +262,12 @@ class DataCleaner:
     def __init__(self, param_dict: Dict):
         self.param_dict = param_dict
 
-    def clean(self, df: pd.DataFrame, method: str) -> pd.DataFrame:
+    def clean(
+        self, df: pd.DataFrame, method: str, window: int, threshold: float
+    ) -> pd.DataFrame:
         """执行完整清洗流程"""
         self.fill_missing_values(df)
-        self.handle_outliers(df, method)
+        self.handle_outliers(df, method, window, threshold)
         self.standardize(df)
 
         return df
@@ -240,7 +278,7 @@ class DataCleaner:
 
         numeric_cols = df.select_dtypes(include=[float, int]).columns
         missing_before = df[numeric_cols].isna().sum().sum()
-        
+
         if missing_before == 0:
             LOGGER.warning("数据中没有缺失值，跳过缺失填充")
             return
@@ -259,48 +297,82 @@ class DataCleaner:
             f"缺失值填充完成：{missing_before} -> {missing_after} (填充了 {missing_before - missing_after} 个)"
         )
 
-    def handle_outliers(self, df: pd.DataFrame, method: str):
-        """处理异常值
-
-        策略：
-        - 有参数配置的变量：使用量程范围（量程L ~ 量程H）检测异常
-        - 无参数配置的变量：使用 IQR 方法（四分位距）检测异常
-        - 处理方法：clip（截断）或 remove（删除）
-        """
-        LOGGER.info(f"开始处理异常值 (方法：{method})...")
+    def handle_outliers(
+        self, df: pd.DataFrame, method: str, window: int, threshold: float
+    ):
+        """处理异常值"""
+        if method == "rolling_mad":
+            LOGGER.info(
+                f"开始处理异常值 (方法：{method}, 窗口：{window}, 阈值：{threshold})..."
+            )
+        elif method == "iqr":
+            LOGGER.info(f"开始处理异常值 (方法：{method})...")
+        else:
+            LOGGER.warning(f"未知异常值处理方法 {method}！")
+            return
 
         outlier_count = 0
         for col in df.columns:
             if col in ["TIME", "source_file"]:
                 continue
 
-            count = self._process_column_outliers(df, col, method)
+            col_dtype = df[col].dtype
+            if col_dtype == bool or col_dtype == object:
+                continue
+
+            count = self._process_column_outliers(df, col, method, window, threshold)
             outlier_count += count
 
         LOGGER.info(f"异常值处理完成：共处理 {outlier_count} 个异常值")
 
-    def _process_column_outliers(self, df: pd.DataFrame, col: str, method: str) -> int:
-        """处理单列的异常值"""
-        if col in self.param_dict:
-            return self._handle_param_outliers(df, col, method)
+    def _process_column_outliers(
+        self,
+        df: pd.DataFrame,
+        col: str,
+        method: str,
+        window: int,
+        threshold: float,
+    ) -> int:
+        """处理单列的异常值 - 使用滑动窗口+MAD方法"""
+        if method == "rolling_mad":
+            return self._handle_rolling_mad_outliers(df, col, window, threshold)
         else:
-            return self._handle_iqr_outliers(df, col, method)
+            return self._handle_iqr_outliers(df, col)
 
-    def _handle_param_outliers(self, df: pd.DataFrame, col: str, method: str) -> int:
-        """使用参数配置处理异常值 - 基于传感器量程范围"""
-        lower = self.param_dict[col].get("量程L")
-        upper = self.param_dict[col].get("量程H")
+    def _handle_rolling_mad_outliers(
+        self,
+        df: pd.DataFrame,
+        col: str,
+        window: int,
+        threshold: float,
+    ) -> int:
+        """使用滑动窗口 + MAD方法处理异常值
 
-        if pd.isna(lower) or pd.isna(upper):
-            return 0
+        异常值定义为: |x - median| > threshold * MAD
+        """
+        series = df[col].copy()
 
-        if method == "clip":
-            return self._clip_column(df, col, lower, upper)
-        elif method == "remove":
-            return self._remove_column_outliers(df, col, lower, upper)
-        return 0
+        rolling_median = series.rolling(
+            window=window, center=True, min_periods=1
+        ).median()
 
-    def _handle_iqr_outliers(self, df: pd.DataFrame, col: str, method: str) -> int:
+        rolling_mad = (
+            (series - rolling_median)
+            .abs()
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+        )
+
+        mad_threshold = threshold * rolling_mad
+        lower_series = rolling_median - mad_threshold
+        upper_series = rolling_median + mad_threshold
+
+        lower = lower_series.min()
+        upper = upper_series.max()
+
+        return self._clip_column(df, col, lower, upper)
+
+    def _handle_iqr_outliers(self, df: pd.DataFrame, col: str) -> int:
         """使用 IQR 方法处理异常值 - 基于统计分布"""
         Q1 = df[col].quantile(0.25)
         Q3 = df[col].quantile(0.75)
@@ -308,32 +380,17 @@ class DataCleaner:
         lower = Q1 - 1.5 * IQR
         upper = Q3 + 1.5 * IQR
 
-        if method == "clip":
-            return self._clip_column(df, col, lower, upper)
-        return 0
+        return self._clip_column(df, col, lower, upper)
 
     def _clip_column(
         self, df: pd.DataFrame, col: str, lower: float, upper: float
     ) -> int:
         """截断列的异常值到指定范围"""
-        before_count = ((df[col] < lower) | (df[col] > upper)).sum()
-        if before_count > 0:
+        count = ((df[col] < lower) | (df[col] > upper)).sum()
+        if count > 0:
             df[col] = df[col].clip(lower=lower, upper=upper)
-            LOGGER.debug(
-                f"列 {col} 截断 {before_count} 个异常值到 [{lower:.2f}, {upper:.2f}]"
-            )
-        return before_count
-
-    def _remove_column_outliers(
-        self, df: pd.DataFrame, col: str, lower: float, upper: float
-    ) -> int:
-        """删除列的异常值"""
-        mask = (df[col] >= lower) & (df[col] <= upper)
-        removed = (~mask).sum()
-        if removed > 0:
-            df.drop(df[~mask].index, inplace=True)
-            LOGGER.debug(f"列 {col} 删除 {removed} 个异常值")
-        return removed
+            LOGGER.debug(f"列 {col} 截断 {count} 个异常值到 [{lower:.2f}, {upper:.2f}]")
+        return count
 
     def standardize(self, df: pd.DataFrame):
         """数据标准化与格式化"""
@@ -356,7 +413,7 @@ class DataSaver:
 
     @staticmethod
     def save_to_feather(df: pd.DataFrame, output_path: Path) -> bool:
-        """保存为 feather 格式 - 高效的列式存储格式"""
+        """保存为 feather 格式"""
         try:
             LOGGER.info(f"正在保存为 feather 文件：{output_path}")
 
@@ -373,14 +430,14 @@ class DataSaver:
             return False
 
     @staticmethod
-    def save_to_excel(feather_path: Path, output_path: Path) -> bool:
-        """从 feather 转换为 excel 格式 - 便于人工查看和分析"""
+    def save_to_csv(feather_path: Path, output_path: Path) -> bool:
+        """从 feather 转换为 csv 格式"""
         try:
             df = pd.read_feather(feather_path)
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            LOGGER.info(f"正在保存为 excel 文件：{output_path}")
-            df.to_excel(output_path, index=False, engine="openpyxl")
+            LOGGER.info(f"正在保存为 csv 文件：{output_path}")
+            df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
             size_mb = output_path.stat().st_size / (1024 * 1024)
             LOGGER.info(
@@ -388,7 +445,7 @@ class DataSaver:
             )
             return True
         except Exception as e:
-            LOGGER.error(f"保存为 excel 文件失败：{e}")
+            LOGGER.error(f"保存为 csv 文件失败：{e}")
             return False
 
 
@@ -397,61 +454,128 @@ class DataPipeline:
 
     def __init__(self):
         self.config = Config()
-        self.loader = DataLoader(self.config.data_dir)
+        self.loader = None
         self.cleaner = None
         self.saver = DataSaver()
 
-    def run(self, save_excel: bool = True, method: str = "clip"):
+    def run(
+        self,
+        save_csv: bool = True,
+        outlier_method: str = "rolling_mad",
+        event_clean_method: str = "mark",
+        window: int = 720,
+        threshold: float = 3.0,
+    ):
         """执行完整的数据预处理流程
 
         流程：
         1. 加载参数配置
         2. 并行读取所有数据文件
         3. 合并数据并执行基础清洗
-        4. 执行数据清洗（缺失值填充、异常值处理、标准化）
-        5. 保存清洗后的数据
+        4. 执行特殊工况期数据清洗
+        5. 执行数据清洗（缺失值填充、异常值处理、标准化）
+        6. 保存清洗后的数据
+
+        Args:
+            - save_csv: 是否保存为CSV格式
+            - outlier_method: 异常值检测方法
+                - "rolling_mad": 滚动MAD方法(默认)
+                - "iqr": IQR方法
+            - event_clean_method: 特殊工况期清洗方法
+                - "mark": 标记特殊工况期数据(默认)
+                - "remove": 删除特殊工况期数据
+                - "none": 不处理特殊工况期数据
         """
         LOGGER.info("开始数据预处理 Pipeline")
 
-        param_dict = self.config.load_param_dict()
+        param_dict, duplicate_points = self.config.load_param_dict()
         self.config.save_param_dict(param_dict)
         LOGGER.info("参数配置加载完成")
 
+        self.loader = DataLoader(self.config.data_dir, duplicate_points)
         raw_data = self.loader.load_all_months()
         if raw_data.empty:
             LOGGER.error("未加载到任何有效数据")
             return
 
+        if event_clean_method != "none":
+            LOGGER.info(f"开始特殊工况期数据清洗 (方法: {event_clean_method})...")
+            event_periods = load_intervention_records(self.config.data_dir)
+
+            if event_periods:
+                event_cleaner = EventPeriodCleaner(event_periods)
+                summary_df = event_cleaner.get_event_period_summary()
+                summary_df.to_csv(
+                    self.config.output_dir / "event_period_summary.csv", index=False
+                )
+                LOGGER.info(
+                    f"特殊工况期摘要已保存至 {self.config.output_dir / 'event_period_summary.csv'}"
+                )
+
+                raw_data = event_cleaner.clean_event_periods(
+                    raw_data, event_clean_method
+                )
+            else:
+                LOGGER.warning("未找到人工干预记录，跳过特殊工况期清洗")
+
         self.cleaner = DataCleaner(param_dict)
-        cleaned_data = self.cleaner.clean(raw_data, method)
+        cleaned_data = self.cleaner.clean(raw_data, outlier_method, window, threshold)
 
         self.saver.save_to_feather(
             cleaned_data, self.config.output_dir / "all_data_cleaned"
         )
 
-        if save_excel:
-            self.saver.save_to_excel(
+        if save_csv:
+            self.saver.save_to_csv(
                 self.config.output_dir / "all_data_cleaned.feather",
-                self.config.output_dir / "all_data_cleaned.xlsx",
+                self.config.output_dir / "all_data_cleaned.csv",
             )
 
         LOGGER.info("数据预处理 Pipeline 完成！")
-        LOGGER.info(
-            f"清洗后数据集：{self.config.output_dir / 'all_data_cleaned.feather'}"
-        )
-        LOGGER.info(
-            f"Excel 格式：{self.config.output_dir / 'all_data_cleaned.xlsx'}"
-        )
 
 
 def main():
     parser = argparse.ArgumentParser(description="数据预处理 Pipeline")
-    parser.add_argument("--to_excel", action="store_true", help="将最终数据保存为 excel 文件")
-    parser.add_argument("--method", type=str, default="clip", help="异常值处理方法（clip/remove）",)
+    parser.add_argument(
+        "--to_csv", action="store_true", help="将最终数据保存为 csv 文件"
+    )
+    parser.add_argument(
+        "--outlier_method",
+        type=str,
+        default="rolling_mad",
+        choices=["rolling_mad", "iqr"],
+        help="异常值检测方法（rolling_mad/iqr）",
+    )
+    parser.add_argument(
+        "--event_method",
+        type=str,
+        default="mark",
+        choices=["mark", "remove", "none"],
+        help="特殊工况期数据清洗方法（mark标记/remove删除/none不处理）",
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=720,
+        help="异常值检测窗口大小（默认720）",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=3.0,
+        help="异常值检测阈值（默认3.0）",
+    )
+
     args = parser.parse_args()
 
     pipeline = DataPipeline()
-    pipeline.run(save_excel=args.to_excel, method=args.method)
+    pipeline.run(
+        save_csv=args.to_csv,
+        outlier_method=args.outlier_method,
+        event_clean_method=args.event_method,
+        window=args.window,
+        threshold=args.threshold,
+    )
 
 
 if __name__ == "__main__":

@@ -4,17 +4,19 @@
 
 import sys
 import json
+import argparse
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 from logger import get_logger
+from event_period_cleaner import load_intervention_records, EventPeriodCleaner
 
 
 LOGGER = get_logger()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-OUTPUT_DIR = PROJECT_ROOT / "data/output"
+OUTPUT_DIR = PROJECT_ROOT / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -24,37 +26,24 @@ class Config:
     def __init__(self):
         self.script_dir = Path(__file__).resolve().parent
         self.project_root = self.script_dir.parent
-        self.output_dir = self.project_root / "data" / "output"
+        self.output_dir = self.project_root / "output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        self.param_dict_path = self.output_dir / "param_dict.json"
         self.data_path = self.output_dir / "all_data_cleaned.feather"
+        self.intervention_records_dir = (
+            self.project_root / "data" / "川宁项目4锅炉2号机组-60秒-20260308"
+        )
 
         LOGGER.info(f"输出目录：{self.output_dir}")
         LOGGER.info(f"数据文件：{self.data_path}")
-        LOGGER.info(f"参数文件：{self.param_dict_path}")
-
-    def load_param_dict(self) -> Dict:
-        """加载参数配置字典"""
-        if not self.param_dict_path.exists():
-            LOGGER.warning(f"参数文件不存在：{self.param_dict_path}")
-            return {}
-
-        try:
-            with open(self.param_dict_path, "r", encoding="utf-8") as f:
-                param_dict = json.load(f)
-            LOGGER.info(f"成功加载参数字典，共 {len(param_dict)} 个参数")
-            return param_dict
-        except Exception as e:
-            LOGGER.error(f"加载参数字典失败: {e}")
-            return {}
+        LOGGER.info(f"干预记录目录：{self.intervention_records_dir}")
 
 
 class DataQualityAnalyzer:
     """数据质量分析类 - 负责执行各项质量检查"""
 
-    def __init__(self, param_dict: Dict):
-        self.param_dict = param_dict
+    def __init__(self, outlier_method: str, intervention_records_dir: Path = None):
+        self.outlier_method = outlier_method
+        self.intervention_records_dir = intervention_records_dir
 
     def analyze(self, df: pd.DataFrame) -> Dict:
         """执行完整的数据质量分析流程
@@ -63,6 +52,7 @@ class DataQualityAnalyzer:
         1. 缺失值分析
         2. 异常值检测
         3. 时间连续性检查
+        4. 特殊工况期数据分析
         """
         LOGGER.info("开始数据质量分析")
 
@@ -70,6 +60,7 @@ class DataQualityAnalyzer:
             "missing_values": self.analyze_missing_values(df),
             "outliers": self.detect_outliers(df),
             "time_continuity": self.check_time_continuity(df),
+            "event_periods": self.analyze_event_periods(df),
         }
 
         LOGGER.info("数据质量分析完成！")
@@ -99,22 +90,22 @@ class DataQualityAnalyzer:
         return missing_stats
 
     def detect_outliers(self, df: pd.DataFrame, iqr_multiplier: float = 1.5) -> Dict:
-        """异常值检测
-
-        检测策略：
-        - 有参数配置的变量：使用量程范围（量程L ~ 量程H）检测异常
-        - 无参数配置的变量：使用 IQR 方法（四分位距）检测异常
-        """
+        """异常值检测"""
         LOGGER.info("[2] 开始异常值检测...")
 
         outlier_stats = {}
         total_outliers = 0
 
+        window = 720 if self.outlier_method == "rolling_mad" else None
+        threshold = 3.0 if self.outlier_method == "rolling_mad" else iqr_multiplier
+
         for col in df.columns:
             if col not in ["TIME", "source_file"] and pd.api.types.is_numeric_dtype(
                 df[col]
             ):
-                stats = self._detect_column_outliers(df, col, iqr_multiplier)
+                stats = self._detect_column_outliers(
+                    df, col, iqr_multiplier, window, threshold
+                )
                 if stats:
                     outlier_stats[col] = stats
                     total_outliers += stats["outlier_count"]
@@ -124,14 +115,21 @@ class DataQualityAnalyzer:
         return outlier_stats
 
     def _detect_column_outliers(
-        self, df: pd.DataFrame, col: str, iqr_multiplier: float
+        self,
+        df: pd.DataFrame,
+        col: str,
+        iqr_multiplier: float,
+        window: int,
+        threshold: float,
     ) -> Dict:
         """检测单列的异常值"""
         series = df[col].dropna()
         if len(series) == 0:
             return {}
 
-        lower_bound, upper_bound, method = self._get_bounds(series, col, iqr_multiplier)
+        lower_bound, upper_bound, method = self._get_bounds(
+            series, col, iqr_multiplier, self.outlier_method, window, threshold
+        )
 
         outliers = series[(series < lower_bound) | (series > upper_bound)]
 
@@ -144,25 +142,43 @@ class DataQualityAnalyzer:
             "method": method,
         }
 
-    def _get_bounds(self, series: pd.Series, col: str, iqr_multiplier: float) -> tuple:
+    def _get_bounds(
+        self,
+        series: pd.Series,
+        col: str,
+        iqr_multiplier: float,
+        outlier_method: str,
+        window: int,
+        threshold: float,
+    ) -> tuple:
         """获取异常值检测的边界"""
-        if col in self.param_dict:
-            param_info = self.param_dict[col]
-            lower = param_info.get("量程L")
-            upper = param_info.get("量程H")
-
-            if lower is not None and upper is not None:
-                LOGGER.debug(f"使用参数字典中的量程: {col} -> [{lower}, {upper}]")
-                return lower, upper, "param_dict"
-
-        Q1 = series.quantile(0.25)
-        Q3 = series.quantile(0.75)
-        IQR = Q3 - Q1
-        lower = Q1 - iqr_multiplier * IQR
-        upper = Q3 + iqr_multiplier * IQR
-
-        LOGGER.debug(f"使用IQR方法计算量程: {col} -> [{lower:.2f}, {upper:.2f}]")
-        return lower, upper, "IQR"
+        if outlier_method == "rolling_mad":
+            rolling_median = series.rolling(
+                window=window, center=True, min_periods=1
+            ).median()
+            rolling_mad = (
+                (series - rolling_median)
+                .abs()
+                .rolling(window=window, center=True, min_periods=1)
+                .median()
+            )
+            mad_threshold = threshold * rolling_mad
+            lower = rolling_median - mad_threshold
+            upper = rolling_median + mad_threshold
+            LOGGER.debug(
+                f"使用rolling_mad方法计算边界: {col} -> [min:{lower.min():.2f}, max:{upper.max():.2f}]"
+            )
+            return lower.min(), upper.max(), "rolling_mad"
+        elif outlier_method == "iqr":
+            Q1 = series.quantile(0.25)
+            Q3 = series.quantile(0.75)
+            IQR = Q3 - Q1
+            lower = Q1 - iqr_multiplier * IQR
+            upper = Q3 + iqr_multiplier * IQR
+            LOGGER.debug(f"使用IQR方法计算边界: {col} -> [{lower:.2f}, {upper:.2f}]")
+            return lower, upper, "IQR"
+        else:
+            raise ValueError(f"未知的异常值检测方法: {outlier_method}")
 
     def check_time_continuity(self, df: pd.DataFrame) -> Dict:
         """时间连续性检查"""
@@ -219,6 +235,70 @@ class DataQualityAnalyzer:
 
         return gaps
 
+    def analyze_event_periods(self, df: pd.DataFrame) -> Dict:
+        """分析特殊工况期数据"""
+        LOGGER.info("[4] 开始特殊工况期数据分析...")
+
+        if not self.intervention_records_dir:
+            LOGGER.warning("未提供干预记录目录路径,跳过特殊工况期分析")
+            return {"event_periods": [], "total_event_periods": 0}
+
+        event_periods = load_intervention_records(self.intervention_records_dir)
+
+        if not event_periods:
+            LOGGER.warning("未找到人工干预记录")
+            return {"event_periods": [], "total_event_periods": 0}
+
+        df["TIME"] = pd.to_datetime(df["TIME"])
+        total_rows = len(df)
+        event_stats = []
+        total_event_rows = 0
+
+        for period in event_periods:
+            mask = (df["TIME"] >= period.start_time) & (df["TIME"] <= period.end_time)
+            event_rows = mask.sum()
+            total_event_rows += event_rows
+
+            event_stats.append(
+                {
+                    "start_time": period.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end_time": period.end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "duration_hours": round(period.duration.total_seconds() / 3600, 2),
+                    "event_type": period.event_type,
+                    "device": period.device,
+                    "reason": (
+                        period.reason[:50] + "..."
+                        if len(period.reason) > 50
+                        else period.reason
+                    ),
+                    "data_rows": int(event_rows),
+                    "data_percent": round(event_rows / total_rows * 100, 2),
+                }
+            )
+
+        result = {
+            "event_periods": event_stats,
+            "total_event_periods": len(event_periods),
+            "total_event_rows": int(total_event_rows),
+            "event_data_percent": round(total_event_rows / total_rows * 100, 2),
+            "event_types_summary": self._summarize_event_types(event_periods),
+        }
+
+        LOGGER.info(
+            f"[4] 特殊工况期分析完成: {len(event_periods)} 个特殊工况期, "
+            f"涉及 {total_event_rows} 行数据 ({total_event_rows/total_rows*100:.2f}%)"
+        )
+
+        return result
+
+    def _summarize_event_types(self, event_periods) -> Dict:
+        """汇总特殊工况类型统计"""
+        type_counts = {}
+        for period in event_periods:
+            event_type = period.event_type
+            type_counts[event_type] = type_counts.get(event_type, 0) + 1
+        return type_counts
+
 
 class QualityReportGenerator:
     """质量报告生成类 - 负责生成 JSON 和 Markdown 格式的报告"""
@@ -226,7 +306,7 @@ class QualityReportGenerator:
     @staticmethod
     def generate_json_report(quality_results: Dict, output_path: Path) -> Dict:
         """生成 JSON 格式的质量报告"""
-        LOGGER.info(f"[4] 正在生成 JSON 报告：{output_path}")
+        LOGGER.info(f"[5] 正在生成 JSON 报告")
 
         report = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -237,7 +317,7 @@ class QualityReportGenerator:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
 
-        LOGGER.info(f"[4] JSON 报告已保存：{output_path}")
+        LOGGER.info(f"[5] JSON 报告已保存")
         return report
 
     @staticmethod
@@ -246,6 +326,7 @@ class QualityReportGenerator:
         missing_values = quality_results.get("missing_values", {})
         outliers = quality_results.get("outliers", {})
         time_continuity = quality_results.get("time_continuity", {})
+        event_periods = quality_results.get("event_periods", {})
 
         total_missing = sum(v["missing_count"] for v in missing_values.values())
         total_values = (
@@ -270,19 +351,21 @@ class QualityReportGenerator:
             "overall_outlier_rate": round(overall_outlier_rate, 2),
             "time_gap_count": len(time_continuity.get("continuous_gaps", [])),
             "total_records": time_continuity.get("total_records", 0),
+            "event_period_count": event_periods.get("total_event_periods", 0),
+            "event_data_percent": event_periods.get("event_data_percent", 0),
         }
 
     @staticmethod
     def generate_markdown_report(report: Dict, output_path: Path):
         """生成 Markdown 格式的质量报告"""
-        LOGGER.info(f"[5] 正在生成 Markdown 报告：{output_path}")
+        LOGGER.info(f"[6] 正在生成 Markdown 报告")
 
         md_content = QualityReportGenerator._build_markdown_content(report)
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(md_content)
 
-        LOGGER.info(f"[5] Markdown 报告已保存：{output_path}")
+        LOGGER.info(f"[6] Markdown 报告已保存")
 
     @staticmethod
     def _build_markdown_content(report: Dict) -> str:
@@ -302,6 +385,8 @@ class QualityReportGenerator:
 | 整体异常率 | {summary['overall_outlier_rate']}% |
 | 时间间隔缺口数 | {summary['time_gap_count']} |
 | 总记录数 | {summary['total_records']} |
+| 特殊工况期数量 | {summary['event_period_count']} |
+| 特殊工况期数据占比 | {summary['event_data_percent']}% |
 
 ## 详细分析
 
@@ -323,6 +408,10 @@ class QualityReportGenerator:
         content += "\n### 3. 时间连续性分析\n\n"
         content += QualityReportGenerator._build_time_continuity_section(
             metrics.get("time_continuity", {})
+        )
+        content += "\n### 4. 特殊工况期数据分析\n\n"
+        content += QualityReportGenerator._build_event_periods_section(
+            metrics.get("event_periods", {})
         )
 
         return content
@@ -362,14 +451,25 @@ class QualityReportGenerator:
 
         return section
 
+    @staticmethod
+    def _build_event_periods_section(event_periods: Dict) -> str:
+        """构建特殊工况期数据分析部分"""
+        section = f"- 总特殊工况期数量: {event_periods.get('total_event_periods', 0)}\n"
+        section += (
+            f"- 特殊工况期数据占比: {event_periods.get('event_data_percent', 0)}%\n"
+        )
+
+        return section
+
 
 class DataQualityPipeline:
     """数据质量评估主流程类"""
 
-    def __init__(self):
+    def __init__(self, outlier_method: str):
         self.config = Config()
         self.analyzer = None
         self.report_generator = QualityReportGenerator()
+        self.outlier_method = outlier_method
 
     def run(self):
         """执行完整的数据质量评估流程
@@ -386,13 +486,13 @@ class DataQualityPipeline:
             LOGGER.error(f"数据文件不存在：{self.config.data_path}")
             return
 
-        param_dict = self.config.load_param_dict()
-
         LOGGER.info(f"正在加载数据文件：{self.config.data_path}")
         df = pd.read_feather(self.config.data_path)
         LOGGER.info(f"数据加载完成，共 {len(df):,} 行，{len(df.columns)} 列")
 
-        self.analyzer = DataQualityAnalyzer(param_dict)
+        self.analyzer = DataQualityAnalyzer(
+            self.outlier_method, self.config.intervention_records_dir
+        )
         quality_results = self.analyzer.analyze(df)
 
         json_report_path = self.config.output_dir / "data_quality_report.json"
@@ -409,7 +509,17 @@ class DataQualityPipeline:
 
 
 def main():
-    pipeline = DataQualityPipeline()
+    parser = argparse.ArgumentParser(description="数据质量评估 Pipeline")
+    parser.add_argument(
+        "--outlier_method",
+        type=str,
+        default="rolling_mad",
+        choices=["rolling_mad", "iqr"],
+        help="异常值检测方法（rolling_mad/iqr）",
+    )
+    args = parser.parse_args()
+
+    pipeline = DataQualityPipeline(outlier_method=args.outlier_method)
     pipeline.run()
 
 
