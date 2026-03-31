@@ -8,7 +8,7 @@ import argparse
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List
-from logger import get_logger
+from src.utils.logger import get_logger
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 from event_period_cleaner import EventPeriodCleaner, load_intervention_records
@@ -49,7 +49,7 @@ class Config:
                 self.param_file, sheet_name="config", header=1, engine="openpyxl"
             )
             config = config.dropna(subset=["点名"])
-
+        
             field_count = len(config)
             unique_count = config["点名"].nunique()
             LOGGER.info(
@@ -72,7 +72,24 @@ class Config:
                     for k, v in row.items()
                     if k != "点名" and "Unnamed" not in k
                 }
-
+            # 添加时间戳和源文件参数
+            new_param = {
+                "TIME":{
+                    "简称":"时间戳",
+                    "描述":"时间戳",
+                    "单位": None,
+                    "量程H": None,
+                    "量程L": None,
+                },
+                "source_file":{
+                    "简称":"源文件",
+                    "描述":"数据来源文件",
+                    "单位": None,
+                    "量程H": None,
+                    "量程L": None,
+                }
+            }
+            param_dict.update(new_param)
             return param_dict, duplicate_points
         except Exception as e:
             LOGGER.error(f"读取参数配置文件失败：{e}")
@@ -206,7 +223,7 @@ class DataLoader:
         final_df = pd.concat(dfs, ignore_index=True)
         final_df["TIME"] = pd.to_datetime(final_df["TIME"])
         final_df = final_df.sort_values(by="TIME").reset_index(drop=True)
-
+        final_df["source_file"] = final_df.pop("source_file")
         final_df = self._remove_empty_rows(final_df)
 
         return final_df

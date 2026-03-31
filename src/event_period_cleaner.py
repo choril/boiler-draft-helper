@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 from typing import List
-from logger import get_logger
+from src.utils.logger import get_logger
 
 
 LOGGER = get_logger()

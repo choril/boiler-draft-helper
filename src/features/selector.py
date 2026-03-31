@@ -1,0 +1,731 @@
+import json
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+import pandas as pd
+from sklearn.feature_selection import mutual_info_regression
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
+from statsmodels.tsa.stattools import grangercausalitytests
+
+from src.utils.config import (
+    MAIN_TARGETS,
+    EXCLUDE_VARIABLES,
+    SELF_DERIVED_PATTERNS,
+    CAUSAL_FEATURE_PATTERNS,
+    CONTROL_PARAMS,
+)
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+class FeatureSelector:
+    """特征选择器 - 包含滞后互信息选择、相关性选择方法"""
+
+    def __init__(
+        self,
+        feature_matrix: pd.DataFrame,
+        target_vars: list[str] | None = None,
+        exclude_cols: list[str] | None = None,
+    ):
+        self.feature_matrix = feature_matrix
+        self.target_vars = target_vars or MAIN_TARGETS
+        self.exclude_cols = exclude_cols or EXCLUDE_VARIABLES
+        self.selected_features: list[str] = []
+        self.importance_scores: dict[str, float] = {}
+        self.scaler: StandardScaler | MinMaxScaler | None = None
+        self.scaler_params: dict = {}
+        self.target_scaler: StandardScaler | None = None
+        self.target_scaler_params: dict = {}
+
+    def _get_numeric_features(self) -> list[str]:
+        numeric_cols = self.feature_matrix.select_dtypes(
+            include=[np.number]
+        ).columns.tolist()
+        return [c for c in numeric_cols if c not in self.exclude_cols]
+
+    def _is_self_derived_feature(self, feature: str, target_var: str) -> bool:
+        """判断是否为目标变量的自身衍生特征"""
+        if not feature.startswith(target_var):
+            return False
+        return any(p in feature for p in SELF_DERIVED_PATTERNS)
+
+    def _is_causal_feature(self, feature: str) -> bool:
+        """判断是否为因果特征（包含控制参数或与目标变量相关的特征）"""
+        return any(p in feature for p in CAUSAL_FEATURE_PATTERNS)
+
+    def classify_features(
+        self, features: list[str] | None = None, target_var: str | None = None
+    ) -> dict[str, list[str] | dict]:
+        """将特征分类为自身衍生、因果和其他特征"""
+        self_derived = []
+        causal = []
+        other = []
+
+        for feat in features:
+            if self._is_self_derived_feature(feat, target_var):
+                self_derived.append(feat)
+            elif self._is_causal_feature(feat):
+                causal.append(feat)
+            else:
+                other.append(feat)
+
+        return {
+            "self_derived": self_derived,
+            "causal": causal,
+            "other": other,
+            "stats": {
+                "total": len(features),
+                "self_derived_count": len(self_derived),
+                "causal_count": len(causal),
+                "other_count": len(other),
+                "self_derived_ratio": len(self_derived) / len(features)
+                if features
+                else 0,
+            },
+        }
+
+    def _timeseries_sample(self, df: pd.DataFrame, sample_size: int) -> pd.DataFrame:
+        """时序采样：分段采样 + 保留变化剧烈点"""
+        n_segments = 10
+        segment_size = len(df) // n_segments
+        base_samples = sample_size // n_segments
+
+        indices = []
+        for i in range(n_segments):
+            start = i * segment_size
+            end = start + segment_size if i < n_segments - 1 else len(df)
+            segment_indices = list(range(start, end))
+
+            # 每段均匀采样基础数量
+            if len(segment_indices) > base_samples:
+                step = len(segment_indices) // base_samples
+                indices.extend(segment_indices[::step])
+            else:
+                indices.extend(segment_indices)
+
+        # 补充变化剧烈的点
+        remaining = sample_size - len(indices)
+        if remaining > 0:
+            target_cols = [c for c in self.target_vars if c in df.columns]
+            if target_cols:
+                # 所有目标变量的平均变化率
+                changes = df[target_cols].diff().abs().mean(axis=1)
+            else:
+                # 没有目标变量时，用所有特征的方差
+                changes = df.std(axis=1)
+
+            high_change_indices = changes.nlargest(remaining * 2).index.tolist()
+            for idx in high_change_indices:
+                if idx not in indices:
+                    indices.append(idx)
+                    if len(indices) >= sample_size:
+                        break
+
+        return df.iloc[sorted(indices[:sample_size])]
+
+    def get_features_and_targets(
+        self, sample_size: int | None = None
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        feature_cols = self._get_numeric_features()
+        available_targets = [
+            t for t in self.target_vars if t in self.feature_matrix.columns
+        ]
+
+        if not available_targets:
+            logger.error("没有可用的目标变量，请检查配置和数据")
+            raise ValueError("没有可用的目标变量")
+
+        df = self.feature_matrix[feature_cols + available_targets].dropna()
+
+        if sample_size and len(df) > sample_size:
+            df = self._timeseries_sample(df, sample_size)
+
+        X = df[feature_cols]
+        y = df[available_targets]
+        return X, y
+
+    def select_by_lagged_mi(
+        self,
+        k: int = 80,
+        horizons: list[int] | None = None,
+        sample_size: int = 5000,
+    ) -> list[str]:
+        """滞后互信息特征选择 - 考虑特征对未来目标的影响"""
+        if horizons is None:
+            horizons = [1, 5, 10, 30]
+
+        logger.info(f"使用滞后互信息选择特征，horizons={horizons}, sample_size={sample_size}")
+        feature_cols = self._get_numeric_features()
+        available_targets = [t for t in self.target_vars if t in self.feature_matrix.columns]
+
+        df = self.feature_matrix[feature_cols + available_targets].dropna()
+        if sample_size and len(df) > sample_size:
+            df = self._timeseries_sample(df, sample_size)
+
+        X = df[feature_cols]
+        y = df[available_targets]
+
+        all_scores: dict[str, float] = {}
+        for target in y.columns:
+            for horizon in horizons:
+                # 目标变量滞后
+                y_future = y[target].shift(-horizon)
+                X_valid = X.iloc[:-horizon] if horizon > 0 else X.copy()
+
+                valid_mask = ~(y_future.isna() | X_valid.isna().any(axis=1))
+                y_clean = y_future[valid_mask]
+                X_clean = X_valid[valid_mask]
+
+                if len(X_clean) < 100:
+                    continue
+
+                mi_scores = mutual_info_regression(
+                    X_clean.values,
+                    y_clean.values,
+                    random_state=42
+                )
+                # 不同滞后步数加权：近期更重要
+                weight = 1.0 / (1 + horizon / 10)
+                for feat, score in zip(feature_cols, mi_scores):
+                    if feat not in all_scores:
+                        all_scores[feat] = 0
+                    all_scores[feat] += score * weight
+
+        sorted_features = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+        self.selected_features = [f[0] for f in sorted_features]
+        self.importance_scores = dict(sorted_features)
+
+        logger.info(f"滞后互信息选择完成，选出 {len(self.selected_features)} 个特征")
+        logger.info(f"\n滞后互信息前20个重要特征:")
+        for i, (feat, score) in enumerate(sorted_features[:20]):
+            logger.info(f"  {i + 1}. {feat}: {score:.4f}")
+
+        return self.selected_features
+
+    def select_by_granger_causality(
+        self,
+        features: list[str] | None = None,
+        max_lag: int = 10,
+        sample_size: int = 3000,
+        significance: float = 0.05,
+        n_jobs: int = -1,
+        pre_filter_correlation: float = 0.95,
+    ) -> list[str]:
+        """Granger因果检验 - 检验特征是否对目标有预测能力
+
+        Args:
+            features: 待检验的特征列表
+            max_lag: 最大滞后阶数
+            sample_size: 样本数量限制
+            significance: 显著性阈值
+            n_jobs: 并行任务数，-1表示使用所有CPU
+            pre_filter_correlation: 预过滤高相关特征的阈值
+        """
+       
+
+        logger.info(f"Granger因果检验 (max_lag={max_lag})")
+
+        if features is None:
+            features = self._get_numeric_features()
+
+        feature_cols = self._get_numeric_features()
+        available_targets = [t for t in self.target_vars if t in self.feature_matrix.columns]
+
+        df = self.feature_matrix[feature_cols + available_targets].dropna()
+        if sample_size and len(df) > sample_size:
+            df = df.iloc[-sample_size:]
+
+        # 预过滤高相关特征
+        if pre_filter_correlation > 0:
+            features = self._pre_filter_collinear(
+                df, features, threshold=pre_filter_correlation
+            )
+            logger.info(f"预过滤后剩余 {len(features)} 个特征")
+
+        # 准备检验任务
+        test_tasks = []
+        for target in available_targets:
+            for feat in features:
+                test_tasks.append((target, feat, df[[target, feat]].values, max_lag))
+
+        # 并行执行检验
+        significant_features: dict[str, float] = {}
+        n_workers = n_jobs if n_jobs > 0 else mp.cpu_count()
+
+        logger.info(f"开始并行检验 {len(test_tasks)} 个特征-目标组合 (使用 {n_workers} 个进程)...")
+
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(self._granger_test_single, task): task
+                for task in test_tasks
+            }
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                try:
+                    result = future.result()
+                    if result is not None:
+                        feat, pvalue, n_significant = result
+                        if pvalue < significance or n_significant >= 3:
+                            if feat not in significant_features:
+                                significant_features[feat] = 0
+                            # 综合评分：显著性次数 × (1-平均p值)
+                            significant_features[feat] += n_significant * (1 - pvalue)
+                except Exception:
+                    pass
+
+                if completed % 50 == 0 or completed == len(test_tasks):
+                    logger.info(f"  进度: {completed}/{len(test_tasks)}")
+
+        sorted_features = sorted(
+            significant_features.items(), key=lambda x: x[1], reverse=True
+        )
+        selected = [f[0] for f in sorted_features]
+
+        logger.info(f"Granger因果检验完成，选出 {len(selected)} 个显著特征")
+        logger.info(f"因果检验前15个显著特征:")
+        for i, (feat, score) in enumerate(sorted_features[:15]):
+            logger.info(f"  {i + 1}. {feat}: {score:.4f}")
+
+        return selected
+
+    def _pre_filter_collinear(
+        self, df: pd.DataFrame, features: list[str], threshold: float = 0.95
+    ) -> list[str]:
+        """预过滤高相关特征，保留代表性特征"""
+        if len(features) < 20:
+            return features
+
+        corr_matrix = df[features].corr().abs()
+
+        # 基于相关性聚类，每组保留一个代表
+        visited = set()
+        representatives = []
+
+        for feat in features:
+            if feat in visited:
+                continue
+            representatives.append(feat)
+            visited.add(feat)
+
+            # 标记高相关特征为已访问
+            for other in features:
+                if other != feat and other not in visited:
+                    if corr_matrix.loc[feat, other] > threshold:
+                        visited.add(other)
+
+        return representatives
+
+    def _granger_test_single(task: tuple) -> tuple[str, float, int] | None:
+        """单个Granger检验任务"""
+        _target, feat, test_data, max_lag = task
+
+        try:
+            if len(test_data) < max_lag + 20:
+                return None
+            if np.any(np.isnan(test_data)):
+                return None
+
+            # 平稳性检查 - 方差过小可能导致检验失效
+            if np.var(test_data[:, 0]) < 1e-10 or np.var(test_data[:, 1]) < 1e-10:
+                return None
+
+            result = grangercausalitytests(test_data, maxlag=max_lag, verbose=False)
+
+            # 收集所有滞后阶数的p值
+            pvalues = [result[lag][0]["ssr_ftest"][1] for lag in range(1, max_lag + 1)]
+            min_pvalue = min(pvalues)
+
+            # 计算显著滞后阶数数量（一致性指标）
+            n_significant = sum(1 for p in pvalues if p < 0.05)
+
+            return feat, min_pvalue, n_significant
+
+        except Exception:
+            return None
+
+    def select(
+        self,
+        k: int = 80,
+        sample_size: int = 10000,
+        horizons: list[int] | None = None,
+        use_granger: bool = False,
+        must_have_features: list[str] | None = None,
+    ) -> list[str]:
+        """针对时序预测优化的特征选择流程
+
+        Args:
+            k: 目标特征数量
+            sample_size: 采样数量
+            horizons: 预测步长列表
+            use_granger: 是否使用Granger因果检验
+            must_have_features: 必须保留的特征
+        """
+        if must_have_features is None:
+            must_have_features = CONTROL_PARAMS.copy()
+
+        if horizons is None:
+            horizons = [1, 3, 5, 10]
+
+        logger.info("时序优化特征选择流程")
+        # 滞后互信息选择
+        lagged_mi_features = self.select_by_lagged_mi(k * 2, horizons, sample_size)
+        # Granger因果检验选择
+        if use_granger:
+            granger_features = self.select_by_granger_causality(features=lagged_mi_features)
+        else:
+            granger_features = []
+
+        # 综合排序
+        all_candidates: dict[str, int] = {}
+        for f in must_have_features:
+            if f in self._get_numeric_features():
+                all_candidates[f] = 999
+
+        for f in lagged_mi_features:
+            all_candidates[f] = all_candidates.get(f, 0) + 1
+        for f in granger_features:
+            all_candidates[f] = all_candidates.get(f, 0) + 1
+
+        sorted_candidates = sorted(
+            all_candidates.items(), key=lambda x: (x[1], x[0]), reverse=True
+        )
+        selected = [f[0] for f in sorted_candidates[:k]]
+        # 移除高相关冗余特征
+        selected = self.remove_collinear_features(selected, threshold=0.90)
+        # 移除低方差特征
+        selected = self.remove_low_variance_features(selected, threshold=0.01)
+        # 检查并补充控制参数
+        for f in must_have_features:
+            if f in self._get_numeric_features() and f not in selected:
+                selected.append(f)
+
+        self.selected_features = selected
+        logger.info(f"\n最终选择: {len(selected)} 个特征")
+        logger.info(f"控制参数保留: {[f for f in must_have_features if f in selected]}")
+
+        return selected
+
+    def remove_collinear_features(
+        self,
+        features: list[str] | None = None,
+        threshold: float = 0.95,
+        protected_features: list[str] | None = None,
+    ) -> list[str]:
+        """移除高相关冗余特征
+
+        Args:
+            features: 待筛选的特征列表
+            threshold: 相关系数阈值
+            protected_features: 受保护的特征（不会被移除）
+        """
+        if features is None:
+            features = self.selected_features
+
+        if protected_features is None:
+            protected_features = CONTROL_PARAMS.copy()
+
+        logger.info("移除冗余特征")
+
+        df = self.feature_matrix[features].dropna()
+        corr_matrix = df.corr().abs()
+
+        to_remove = set()
+        for i in range(len(features)):
+            for j in range(i + 1, len(features)):
+                if corr_matrix.iloc[i, j] > threshold:
+                    feat_i, feat_j = features[i], features[j]
+                    # 保护控制参数不被移除
+                    if feat_i in protected_features:
+                        if feat_j not in protected_features:
+                            to_remove.add(feat_j)
+                    elif feat_j in protected_features:
+                        to_remove.add(feat_i)
+                    elif feat_j not in to_remove:
+                        to_remove.add(feat_j)
+
+        selected = [f for f in features if f not in to_remove]
+        logger.info(f"移除 {len(to_remove)} 个冗余特征")
+
+        return selected
+
+    def remove_low_variance_features(
+        self,
+        features: list[str] | None = None,
+        threshold: float = 0.01,
+        protected_features: list[str] | None = None,
+    ) -> list[str]:
+        """移除低方差特征
+
+        Args:
+            features: 待筛选的特征列表
+            threshold: 方差阈值
+            protected_features: 受保护的特征（不会被移除）
+        """
+        if features is None:
+            features = self.selected_features
+
+        if protected_features is None:
+            protected_features = CONTROL_PARAMS.copy()
+        
+        logger.info("移除低方差特征")
+
+        df = self.feature_matrix[features].dropna()
+        variances = df.var()
+
+        selected = []
+        for f in features:
+            if f in protected_features:
+                selected.append(f)  # 受保护的特征强制保留
+            elif variances[f] >= threshold:
+                selected.append(f)
+
+        removed = len(features) - len(selected)
+        logger.info(f"移除 {removed} 个低方差特征")
+
+        return selected
+
+    def fit_scaler(
+        self,
+        method: Literal["standard", "minmax"] = "standard",
+        target: Literal["features", "targets"] = "features",
+        features: list[str] | None = None,
+    ) -> None:
+        """拟合缩放器
+
+        Args:
+            method: 缩放方法，"standard" 或 "minmax"
+            target: 缩放目标，"features" 缩放特征，"targets" 缩放目标变量
+            features: 特征列表，仅当 target="features" 时使用
+        """
+        if target == "features":
+            if features is None:
+                features = self.selected_features
+            data = self.feature_matrix[features].dropna()
+            columns = features
+        else:
+            data = self.feature_matrix[self.target_vars].dropna()
+            columns = self.target_vars
+
+        if method == "standard":
+            scaler = StandardScaler()
+        else:
+            scaler = MinMaxScaler()
+
+        scaler.fit(data)
+
+        params = {
+            "method": method,
+            "mean": scaler.mean_.tolist() if hasattr(scaler, "mean_") else None,
+            "std": scaler.scale_.tolist() if hasattr(scaler, "scale_") else None,
+            "min": scaler.data_min_.tolist() if hasattr(scaler, "data_min_") else None,
+            "max": scaler.data_max_.tolist() if hasattr(scaler, "data_max_") else None,
+        }
+
+        if target == "features":
+            self.scaler = scaler
+            self.scaler_params = params
+            logger.info(f"特征缩放器已拟合，方法: {method}，特征数: {len(columns)}")
+        else:
+            self.target_scaler = scaler
+            self.target_scaler_params = params
+            logger.info(f"目标变量缩放器已拟合，方法: {method}")
+            for i, t in enumerate(self.target_vars):
+                logger.info(
+                    f"  {t}: mean={scaler.mean_[i]:.4f}, std={scaler.scale_[i]:.4f}"
+                )
+
+    def build_seq2seq_sequences(
+        self,
+        seq_length: int = 30,
+        output_steps: int = 10,
+        features: list[str] | None = None,
+        step: int = 1,
+        scale_features: bool = True,
+        scale_targets: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if features is None:
+            features = self.selected_features
+
+        logger.info(f"Seq2Seq序列构建，输出步数={output_steps}")
+
+        df = self.feature_matrix[features + self.target_vars].dropna()
+
+        X_data = df[features].values.astype(np.float32)
+        y_data = df[self.target_vars].values.astype(np.float32)
+
+        if scale_features:
+            if self.scaler is None:
+                self.fit_scaler(target="features")
+            X_data = self.scaler.transform(X_data).astype(np.float32)
+
+        if scale_targets:
+            if self.target_scaler is None:
+                self.fit_scaler(target="targets")
+            y_data = self.target_scaler.transform(y_data).astype(np.float32)
+
+        n_samples = len(df) - seq_length - output_steps + 1
+        if n_samples <= 0:
+            logger.error(
+                f"数据长度不足以构建序列: len={len(df)}, seq_length={seq_length}, output_steps={output_steps}"
+            )
+            raise ValueError(
+                f"数据长度不足以构建序列: len={len(df)}, seq_length={seq_length}, output_steps={output_steps}"
+            )
+
+        shape = (n_samples, seq_length, X_data.shape[1])
+        strides = (X_data.strides[0], X_data.strides[0], X_data.strides[1])
+        X_all = np.lib.stride_tricks.as_strided(X_data, shape=shape, strides=strides)
+
+        y_all = np.zeros(
+            (n_samples, output_steps, len(self.target_vars)), dtype=np.float32
+        )
+        for i in range(output_steps):
+            y_all[:, i, :] = y_data[seq_length + i : seq_length + i + n_samples]
+
+        X = X_all[::step].copy()
+        y = y_all[::step].copy()
+
+        del X_data, y_data, X_all, y_all
+
+        logger.info(f"序列构建完成:")
+        logger.info(f"  - 序列长度: {seq_length}")
+        logger.info(f"  - 输出步数: {output_steps}")
+        logger.info(f"  - 样本数: {len(X)}")
+        logger.info(f"  - 输入形状: {X.shape}")
+        logger.info(f"  - 输出形状: {y.shape}")
+
+        return X, y
+
+    def save_results(self, output_path: str | Path) -> None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        results = {
+            "selected_features": self.selected_features,
+            "importance_scores": self.importance_scores,
+            "target_variables": self.target_vars,
+            "n_features": len(self.selected_features),
+            "scaler_params": self.scaler_params,
+            "target_scaler_params": self.target_scaler_params,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"特征选择结果已保存至: {output_path}")
+
+    def load_results(self, input_path: str | Path) -> None:
+        input_path = Path(input_path)
+
+        with open(input_path, "r", encoding="utf-8") as f:
+            results = json.load(f)
+
+        self.selected_features = results["selected_features"]
+        self.importance_scores = results["importance_scores"]
+        self.target_vars = results.get("target_variables", self.target_vars)
+        self.scaler_params = results.get("scaler_params", {})
+        self.target_scaler_params = results.get("target_scaler_params", {})
+
+        if self.target_scaler_params:
+            self.target_scaler = StandardScaler()
+            self.target_scaler.mean_ = np.array(self.target_scaler_params["mean"])
+            self.target_scaler.scale_ = np.array(self.target_scaler_params["std"])
+
+        logger.info(f"特征选择结果已加载: {input_path}")
+        logger.info(f"特征数: {len(self.selected_features)}")
+
+
+class FeatureAnalysisVisualizer:
+    """特征分析可视化工具"""
+
+    def __init__(self, output_dir: str = "output"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True)
+
+    def plot_feature_importance(
+        self, importance_dict: dict[str, float], title: str, filename: str
+    ) -> str:
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(12, 8))
+        sorted_items = sorted(
+            importance_dict.items(), key=lambda x: x[1], reverse=True
+        )[:20]
+        features = [item[0] for item in sorted_items]
+        values = [item[1] for item in sorted_items]
+        plt.barh(range(len(features)), values, color="steelblue")
+        plt.yticks(range(len(features)), features)
+        plt.xlabel("Importance Score")
+        plt.title(title)
+        plt.tight_layout()
+        path = self.output_dir / filename
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        return str(path)
+
+    def plot_feature_correlation_heatmap(
+        self, feature_matrix: pd.DataFrame, selected_features: list[str], filename: str
+    ) -> str:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        corr_matrix = feature_matrix[selected_features].corr()
+        plt.figure(figsize=(14, 12))
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+        sns.heatmap(
+            corr_matrix,
+            mask=mask,
+            annot=False,
+            cmap="RdBu_r",
+            center=0,
+            square=True,
+            cbar_kws={"shrink": 0.8},
+        )
+        plt.title("Selected Features Correlation Matrix")
+        plt.tight_layout()
+        path = self.output_dir / filename
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        return str(path)
+
+    def plot_target_correlation(
+        self,
+        feature_matrix: pd.DataFrame,
+        selected_features: list[str],
+        target_vars: list[str],
+        filename: str,
+    ) -> str:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        n_targets = len(target_vars)
+        fig, axes = plt.subplots(1, n_targets, figsize=(8 * n_targets, 10))
+
+        if n_targets == 1:
+            axes = [axes]
+
+        for idx, target in enumerate(target_vars):
+            if target not in feature_matrix.columns:
+                continue
+            corr = feature_matrix[selected_features].corrwith(
+                feature_matrix[target], method="pearson"
+            )
+            corr_sorted = corr.abs().sort_values(ascending=True).tail(20)
+
+            axes[idx].barh(
+                range(len(corr_sorted)), corr_sorted.values, color="steelblue"
+            )
+            axes[idx].set_yticks(range(len(corr_sorted)))
+            axes[idx].set_yticklabels(corr_sorted.index)
+            axes[idx].set_xlabel("Absolute Correlation")
+            axes[idx].set_title(f"Feature Correlation with {target}")
+
+        plt.tight_layout()
+        path = self.output_dir / filename
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close()
+        return str(path)
