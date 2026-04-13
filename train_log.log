@@ -1,0 +1,159 @@
+W0413 23:27:49.799000 2957062 torch/distributed/run.py:851] 
+W0413 23:27:49.799000 2957062 torch/distributed/run.py:851] *****************************************
+W0413 23:27:49.799000 2957062 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0413 23:27:49.799000 2957062 torch/distributed/run.py:851] *****************************************
+2026-04-13 23:27:53 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=4, world_size=8
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=6, world_size=8
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=1, world_size=8
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=5, world_size=8
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=2, world_size=8
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=0, world_size=8
+2026-04-13 23:27:54 - __main__ - [1;32mINFO[0m - 分布式训练: 8 GPUs, 每GPU batch_size: 64
+2026-04-13 23:27:54 - __main__ - [1;32mINFO[0m - 构建MPC样本...
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=7, world_size=8
+2026-04-13 23:27:54 - src.modeling.narx_lstm - [1;32mINFO[0m - 分布式训练初始化完成: rank=3, world_size=8
+2026-04-13 23:27:54 - src.data.window_sampler - [1;32mINFO[0m - 加载数据: output/all_data_cleaned.feather
+2026-04-13 23:27:55 - src.data.window_sampler - [1;32mINFO[0m - 数据维度: (585939, 52)
+2026-04-13 23:27:55 - src.data.window_sampler - [1;32mINFO[0m - 目标变量(Y): 7 维
+2026-04-13 23:27:55 - src.data.window_sampler - [1;32mINFO[0m - 控制变量(U): 7 维
+2026-04-13 23:27:55 - src.data.window_sampler - [1;32mINFO[0m - 状态变量(X): 38 维
+2026-04-13 23:27:55 - src.data.window_sampler - [1;32mINFO[0m - 构建NARX样本（包含未来控制）
+2026-04-13 23:27:57 - src.data.window_sampler - [1;32mINFO[0m - NARX样本构建完成:
+2026-04-13 23:27:57 - src.data.window_sampler - [1;32mINFO[0m -   编码器输入: (585905, 30, 52)
+2026-04-13 23:27:57 - src.data.window_sampler - [1;32mINFO[0m -   解码器输入: (585905, 5, 7)
+2026-04-13 23:27:57 - src.data.window_sampler - [1;32mINFO[0m -   目标输出: (585905, 5, 7)
+2026-04-13 23:27:59 - __main__ - [1;32mINFO[0m - 样本已缓存: output/models/narx_lstm/samples_cache.npz
+2026-04-13 23:27:59 - __main__ - [1;32mINFO[0m - 样本构建完成，标记文件已创建
+[rank0]:[W413 23:27:59.896277673 ProcessGroupNCCL.cpp:5188] Guessing device ID based on global rank. This can cause a hang if rank to GPU mapping is heterogeneous. You can specify device_id in init_process_group()
+2026-04-13 23:28:00 - __main__ - [1;32mINFO[0m - 划分数据集...
+2026-04-13 23:28:01 - __main__ - [1;32mINFO[0m - 数据集大小:
+2026-04-13 23:28:01 - __main__ - [1;32mINFO[0m -   训练集: 410133
+2026-04-13 23:28:01 - __main__ - [1;32mINFO[0m -   验证集: 87886
+2026-04-13 23:28:01 - __main__ - [1;32mINFO[0m -   测试集: 87886
+2026-04-13 23:28:01 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:01 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:01 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:01 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:01 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m - NARX-LSTM模型创建完成:
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   编码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   解码器hidden: 256
+2026-04-13 23:28:04 - src.modeling.narx_lstm - [1;32mINFO[0m -   预测步数: 5
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=1
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=2
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=0
+2026-04-13 23:28:05 - __main__ - [1;32mINFO[0m - 使用物理约束损失，权重: 0.2
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 开始NARX-LSTM训练
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 最大epochs: 100, 早停patience: 15
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=6
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=7
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=5
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=4
+2026-04-13 23:28:05 - src.modeling.narx_lstm - [1;32mINFO[0m - 使用DDP分布式训练，rank=3
+2026-04-13 23:28:18 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 1/100 - Train Loss: 0.7741, Val Loss: 0.2700
+2026-04-13 23:28:30 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 2/100 - Train Loss: 0.7502, Val Loss: 0.2450
+2026-04-13 23:28:42 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 3/100 - Train Loss: 0.7463, Val Loss: 0.2495
+2026-04-13 23:28:55 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 4/100 - Train Loss: 0.7428, Val Loss: 0.2472
+2026-04-13 23:29:06 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 5/100 - Train Loss: 0.7424, Val Loss: 0.2440
+2026-04-13 23:29:16 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 6/100 - Train Loss: 0.7405, Val Loss: 0.2437
+2026-04-13 23:29:29 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 7/100 - Train Loss: 0.7403, Val Loss: 0.2450
+2026-04-13 23:29:41 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 8/100 - Train Loss: 0.7375, Val Loss: 0.2500
+2026-04-13 23:29:54 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 9/100 - Train Loss: 0.7403, Val Loss: 0.2480
+2026-04-13 23:30:05 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 10/100 - Train Loss: 0.7354, Val Loss: 0.2557
+2026-04-13 23:30:15 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 11/100 - Train Loss: 0.7370, Val Loss: 0.2449
+2026-04-13 23:30:27 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 12/100 - Train Loss: 0.7358, Val Loss: 0.2424
+2026-04-13 23:30:40 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 13/100 - Train Loss: 0.7351, Val Loss: 0.2502
+2026-04-13 23:30:52 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 14/100 - Train Loss: 0.7311, Val Loss: 0.2500
+2026-04-13 23:31:05 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 15/100 - Train Loss: 0.7313, Val Loss: 0.2528
+2026-04-13 23:31:16 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 16/100 - Train Loss: 0.7346, Val Loss: 0.2471
+2026-04-13 23:31:26 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 17/100 - Train Loss: 0.7333, Val Loss: 0.2445
+2026-04-13 23:31:39 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 18/100 - Train Loss: 0.7317, Val Loss: 0.2487
+2026-04-13 23:31:51 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 19/100 - Train Loss: 0.7274, Val Loss: 0.2453
+2026-04-13 23:32:03 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 20/100 - Train Loss: 0.7266, Val Loss: 0.2423
+2026-04-13 23:32:15 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 21/100 - Train Loss: 0.7246, Val Loss: 0.2558
+2026-04-13 23:32:27 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 22/100 - Train Loss: 0.7252, Val Loss: 0.2453
+2026-04-13 23:32:37 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 23/100 - Train Loss: 0.7257, Val Loss: 0.2405
+2026-04-13 23:32:48 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 24/100 - Train Loss: 0.7254, Val Loss: 0.2601
+2026-04-13 23:33:00 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 25/100 - Train Loss: 0.7253, Val Loss: 0.2475
+2026-04-13 23:33:13 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 26/100 - Train Loss: 0.7234, Val Loss: 0.2392
+2026-04-13 23:33:25 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 27/100 - Train Loss: 0.7233, Val Loss: 0.2406
+2026-04-13 23:33:37 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 28/100 - Train Loss: 0.7223, Val Loss: 0.2369
+2026-04-13 23:33:46 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 29/100 - Train Loss: 0.7207, Val Loss: 0.2403
+2026-04-13 23:33:59 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 30/100 - Train Loss: 0.7228, Val Loss: 0.2425
+2026-04-13 23:34:11 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 31/100 - Train Loss: 0.7226, Val Loss: 0.2550
+2026-04-13 23:34:23 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 32/100 - Train Loss: 0.7225, Val Loss: 0.2378
+2026-04-13 23:34:36 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 33/100 - Train Loss: 0.7237, Val Loss: 0.2431
+2026-04-13 23:34:47 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 34/100 - Train Loss: 0.7221, Val Loss: 0.2463
+2026-04-13 23:34:56 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 35/100 - Train Loss: 0.7175, Val Loss: 0.2375
+2026-04-13 23:35:08 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 36/100 - Train Loss: 0.7208, Val Loss: 0.2362
+2026-04-13 23:35:21 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 37/100 - Train Loss: 0.7161, Val Loss: 0.2403
+2026-04-13 23:35:33 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 38/100 - Train Loss: 0.7215, Val Loss: 0.2356
+2026-04-13 23:35:45 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 39/100 - Train Loss: 0.7185, Val Loss: 0.2367
+2026-04-13 23:35:55 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 40/100 - Train Loss: 0.7167, Val Loss: 0.2363
+2026-04-13 23:36:06 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 41/100 - Train Loss: 0.7175, Val Loss: 0.2391
+2026-04-13 23:36:19 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 42/100 - Train Loss: 0.7177, Val Loss: 0.2356
+2026-04-13 23:36:31 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 43/100 - Train Loss: 0.7183, Val Loss: 0.2381
+2026-04-13 23:36:44 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 44/100 - Train Loss: 0.7155, Val Loss: 0.2415
+2026-04-13 23:36:56 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 45/100 - Train Loss: 0.7181, Val Loss: 0.2397
+2026-04-13 23:37:07 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 46/100 - Train Loss: 0.7162, Val Loss: 0.2380
+2026-04-13 23:37:17 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 47/100 - Train Loss: 0.7165, Val Loss: 0.2494
+2026-04-13 23:37:30 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 48/100 - Train Loss: 0.7160, Val Loss: 0.2321
+2026-04-13 23:37:42 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 49/100 - Train Loss: 0.7185, Val Loss: 0.2376
+2026-04-13 23:37:54 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 50/100 - Train Loss: 0.7171, Val Loss: 0.2368
+2026-04-13 23:38:07 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 51/100 - Train Loss: 0.7161, Val Loss: 0.2454
+2026-04-13 23:38:19 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 52/100 - Train Loss: 0.7162, Val Loss: 0.2374
+2026-04-13 23:38:28 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 53/100 - Train Loss: 0.7175, Val Loss: 0.2342
+2026-04-13 23:38:40 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 54/100 - Train Loss: 0.7183, Val Loss: 0.2378
+2026-04-13 23:38:52 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 55/100 - Train Loss: 0.7147, Val Loss: 0.2412
+2026-04-13 23:39:04 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 56/100 - Train Loss: 0.7141, Val Loss: 0.2351
+2026-04-13 23:39:17 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 57/100 - Train Loss: 0.7132, Val Loss: 0.2337
+2026-04-13 23:39:29 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 58/100 - Train Loss: 0.7145, Val Loss: 0.2496
+2026-04-13 23:39:39 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 59/100 - Train Loss: 0.7141, Val Loss: 0.2347
+2026-04-13 23:39:50 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 60/100 - Train Loss: 0.7141, Val Loss: 0.2354
+2026-04-13 23:40:03 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 61/100 - Train Loss: 0.7119, Val Loss: 0.2412
+2026-04-13 23:40:15 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 62/100 - Train Loss: 0.7128, Val Loss: 0.2355
+2026-04-13 23:40:27 - src.modeling.narx_lstm - [1;32mINFO[0m - Epoch 63/100 - Train Loss: 0.7152, Val Loss: 0.2421
+2026-04-13 23:40:27 - src.modeling.narx_lstm - [1;32mINFO[0m - 早停触发，最佳epoch: 48
+2026-04-13 23:40:27 - src.modeling.narx_lstm - [1;32mINFO[0m - 加载最佳模型，验证损失: 0.2321
+2026-04-13 23:40:27 - __main__ - [1;32mINFO[0m - 评估模型...
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m - 测试集评估指标:
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m -   步骤1: RMSE=0.5317, MAE=0.3597
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m -   步骤2: RMSE=0.5568, MAE=0.3805
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m -   步骤3: RMSE=0.6029, MAE=0.4158
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m -   步骤4: RMSE=0.6222, MAE=0.4340
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m -   步骤5: RMSE=0.6450, MAE=0.4564
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m -   总体: RMSE=0.5932, MAE=0.4093
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m - 保存模型...
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m - 模型已保存至: output/models/narx_lstm
+2026-04-13 23:40:35 - __main__ - [1;32mINFO[0m - 训练完成！

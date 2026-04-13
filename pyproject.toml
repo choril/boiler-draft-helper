@@ -17,4 +17,5 @@ dependencies = [
     "tensorflow>=2.21.0",
     "lightgbm>=4.6.0",
     "optuna>=4.3.0",
+    "reformer-pytorch>=1.4.4",
 ]

@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
 LSTM模型训练脚本
-
-功能：
-1. 特征提取与选择
-2. 训练多步预测模型
-3. 评估并保存模型
-
-用于后续风机控制参数优化模型。
 """
 
 import argparse
@@ -80,13 +73,6 @@ def select_features(
         use_granger=use_granger,
         must_have_features=must_have_features,
     )
-    # 检查控制参数保留情况
-    logger.info("控制参数保留情况:")
-    control_in_selected = [c for c in must_have_features if c in selected]
-    control_not_selected = [c for c in must_have_features if c not in selected]
-    logger.info(f"  已保留 ({len(control_in_selected)}): {control_in_selected}")
-    if control_not_selected:
-        logger.info(f"  未保留 ({len(control_not_selected)}): {control_not_selected}")
 
     # 拟合标准化器
     selector.fit_scaler(target="features")
@@ -134,11 +120,23 @@ def split_data(X, y, train_ratio=0.7, val_ratio=0.15):
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
-def evaluate_model(model: LSTM, X_test, y_test, selector):
-    """评估模型"""
+def evaluate_model(model: LSTM, X_test, y_test, selector, target_names: list[str] | None = None):
+    """评估模型
+
+    Args:
+        model: LSTM模型
+        X_test: 测试输入
+        y_test: 测试目标
+        selector: 特征选择器
+        target_names: 目标变量名称列表
+    """
     logger.info("模型评估")
 
-    results = model.evaluate(X_test, y_test, target_scaler=selector.target_scaler)
+    results = model.evaluate(
+        X_test, y_test,
+        target_scaler=selector.target_scaler,
+        target_names=target_names,
+    )
 
     # 添加控制参数信息
     results["control_params"] = [c for c in CONTROL_PARAMS if c in model.feature_names]
@@ -156,7 +154,7 @@ def main():
     parser.add_argument("--use_granger", action="store_true", help="使用Granger因果检验进行特征选择")
     parser.add_argument("--seq_length", type=int, default=30)
     parser.add_argument("--output_steps", type=int, default=10)
-    parser.add_argument("--n_features", type=int, default=80)
+    parser.add_argument("--n_features", type=int, default=120)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--learning_rate", type=float, default=0.001)

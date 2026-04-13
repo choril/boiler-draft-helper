@@ -1,65 +1,132 @@
 from typing import Final
 
+# ========== 目标变量 ==========
 PRESSURE_VARIABLES: Final[list[str]] = [
-    "2BK10CP004",  # 炉膛压力1 (主目标)
+    "2BK10CP004",  # 炉膛压力1
     "2BK2CP004",  # 炉膛压力2
     "2BK10CP005",  # 炉膛压力3
     "2BK2CP005",  # 炉膛压力4
 ]
 
 OXYGEN_VARIABLES: Final[list[str]] = [
-    "2BK10CQ1",  # 含氧量1 (主目标)
+    "2BK10CQ1",  # 含氧量1
     "2BK2CQ1",  # 含氧量2
     "2BK2CQ2",  # 含氧量3
 ]
 
-PRESSURE_MAIN: Final[str] = "2BK10CP004"
-OXYGEN_MAIN: Final[str] = "2BK10CQ1"
 
 TARGET_VARIABLES: Final[list[str]] = PRESSURE_VARIABLES + OXYGEN_VARIABLES
-MAIN_TARGETS: Final[list[str]] = [PRESSURE_MAIN, OXYGEN_MAIN]
 
 EXCLUDE_VARIABLES: Final[list[str]] = ["TIME", "source_file"] + TARGET_VARIABLES
 
-KEY_PARAMS: Final[list[str]] = [
-    "D62AX002",  # 给煤量
-    "D66P53A10",  # 床温
-    "D61AX023",  # 一次风风量
-    "D61AX024",  # 二次风风量
-    "2BK10CP004",  # 炉膛压力
-    "2BK10CQ1",  # 含氧量1
-    "2NC10CS901",  # 引风机A转速
-    "2NC2CS901",  # 引风机B转速
-    "2LB10CS001",  # 一次风机A转速
-    "2LB20CS001",  # 一次风机B转速
-    "2LB30CS901",  # 二次风机A转速
-    "2LB40CS901",  # 二次风机B转速
-    "MSFLOW",  # 主蒸汽
-    "2LA10CT11",  # 出风温1
-    "2LA2CT11",  # 出风温2
-    "2BBA14Q11",  # 一次风机A电流
-    "2BBB12Q11",  # 一次风机B电流
-    "2BBA13Q11",  # 二次风机A电流
-    "2BBB11Q11",  # 二次风机B电流
-    "2BBA15Q11",  # 引风机A电流
-    "2BBB13Q11",  # 引风机B电流
-    "2LA10A12C11",  # 一次风机A输出
-    "2LA20A12C11",  # 一次风机B输出
-    "2LA30A12C11",  # 二次风机A输出
-    "2LA40A12C11",  # 二次风机B输出
-    "DPU61AX107",  # 引风机A输出
-    "DPU61AX108",  # 引风机B输出
+# ========= 非重要参数（共22个）=========
+UNIMPORTANT_PARAMS: Final[list[str]] = [
+    "2BK10CP01",
+    "2BK10CP11",
+    "2BK10CP12",
+    "2BK2CP01",
+    "2BK2CP11",
+    "2BK2CP12",
+    "2BK10CT226",
+    "2BK10CT229",
+    "2BK10CT232",
+    "2BK2CT226",
+    "2BK2CT232",
+    "2LA30CT11",
+    "2LA40CT11",
+    "2NC20A11C01",
+    "D63P74B1",
+    "2NC10A11C01",
+    "BPAFCDMD",
+    "D64P62B1",
+    "APAFCDMD",
+    "2LA40CP01",
+    "D63P71B1",
+    "2LA30A11C01"
 ]
 
+# ========== 关键参数（核心监测指标）==========
+KEY_PARAMS: Final[list[str]] = [
+    # 给煤量 - 主要调控动作
+    "D62AX002",
+    # 床温 - 燃烧状态关键指标
+    "D66P53A10",
+    # 风量 - 燃烧配比
+    "D61AX023",  # 一次风风量
+    "D61AX024",  # 二次风风量
+    # 目标变量
+    "2BK10CP004",  # 炉膛压力（主目标）
+    "2BK10CQ1",    # 含氧量（主目标）
+    # 主蒸汽 - 负荷指标
+    "MSFLOW",
+    # 出风温 - 风机出口温度
+    "2LA10CT11",
+    "2LA2CT11",
+]
+
+# ========== 控制参数（工人调节的参数）==========
+CONTROL_PARAMS: Final[list[str]] = [
+    # 给煤量
+    "D62AX002",
+    # 二次风机A（调氧量）
+    "2LA30A12C11",  # 输出频率
+    # 二次风机B
+    "2LA40A12C11",  # 输出频率
+    # 引风机A（调负压）
+    "DPU61AX107",   # 输出频率
+    # 引风机B
+    "DPU61AX108",   # 输出频率
+    # 一次风机A（快速提升负荷）
+    "2LA10A12C11",  # 输出频率
+    # 一次风机B
+    "2LA20A12C11",  # 输出频率
+]
+
+# ========== 监测参数（需要关注但不直接调节）==========
+MONITOR_PARAMS: Final[list[str]] = [
+    "MSFLOW",      # 主蒸汽流量（负荷）
+    "D66P53A10",   # 床温
+    "D61AX023",    # 一次风风量
+    "D61AX024",    # 二次风风量
+    "2LA10CT11",   # 出风温1
+    "2LA2CT11",    # 出风温2
+    "2BK10CP004",
+    "2BK10CQ1",    # 含氧量（主目标）
+]
+
+# ========== 统计参数（用于窗口统计等特征提取）==========
+PARAMS_FOR_STATS: Final[list[str]] = CONTROL_PARAMS + MONITOR_PARAMS
+
+# ========== 专家经验范围 ==========
 EXPERT_RANGES: Final[dict] = {
     "pressure_ideal": (-150, -80),  # 炉膛压力理想范围
     "pressure_normal": (-230, -20),  # 炉膛压力正常范围
-    "oxygen_ideal": (1.7, 2.3),  # 含氧量理想范围
+    "oxygen_ideal": (1.5, 2.5),  # 含氧量理想范围
     "oxygen_target": 2.0,  # 含氧量目标值
     "coal_ideal": 68,  # 给煤量理想值
     "coal_normal": 40,  # 给煤量正常值
 }
 
+# ========== 标准化参数（基于实际数据计算）==========
+# 用于将物理范围转换为标准化范围
+SCALER_PARAMS: Final[dict] = {
+    "pressure_mean": -118.90,  # 负压均值
+    "pressure_std": 46.24,     # 负压标准差
+    "oxygen_mean": 3.17,       # 含氧量均值
+    "oxygen_std": 0.88,        # 含氧量标准差
+}
+
+# ========== 标准化后的物理范围（用于损失函数约束）==========
+NORMALIZED_RANGES: Final[dict] = {
+    "pressure_ideal": (-0.67, 0.84),   # 理想范围（标准化后）
+    "pressure_normal": (-2.4, 2.14),   # 正常范围（标准化后）
+    "oxygen_ideal": (-1.89, -0.75),    # 理想范围（标准化后）
+    # 用于模型约束的宽松范围（覆盖大部分正常情况）
+    "pressure_constraint": (-3.0, 3.0),  # 标准化后的约束范围
+    "oxygen_constraint": (-3.0, 1.0),    # 标准化后的约束范围（含氧量上限较小）
+}
+
+# ========== 风机参数配置 ==========
 FAN_PARAMS: Final[dict] = {
     "primary_fan": {
         "speed_a": "2LB10CS001",
@@ -70,6 +137,8 @@ FAN_PARAMS: Final[dict] = {
         "outlet_pressure_b": "2HLA2CP001",
         "output_a": "2LA10A12C11",
         "output_b": "2LA20A12C11",
+        "valve_a": "APAFCDMD",  # A阀门开度
+        "valve_b": "BPAFCDMD",  # B阀门开度
         "air_flow": "D61AX023",
     },
     "secondary_fan": {
@@ -81,6 +150,8 @@ FAN_PARAMS: Final[dict] = {
         "outlet_pressure_b": "2LA40CP01",
         "output_a": "2LA30A12C11",
         "output_b": "2LA40A12C11",
+        "valve_a": "2LA30A11C01",  # A阀门开度
+        "valve_b": "2LA40A11C01",  # B阀门开度
         "air_flow": "D61AX024",
     },
     "induced_fan": {
@@ -90,11 +161,14 @@ FAN_PARAMS: Final[dict] = {
         "current_b": "2BBB13Q11",
         "output_a": "DPU61AX107",
         "output_b": "DPU61AX108",
+        "valve_a": "2NC10A11C01",  # A阀门开度
+        "valve_b": "2NC20A11C01",  # B阀门开度
         "inlet_pressure_a": "2NA10CP004",  # 引风机A入风压力
         "inlet_pressure_b": "2NA2CP004",  # 引风机B入风压力
     },
 }
 
+# ========== 风机专家经验范围 ==========
 FAN_EXPERT_RANGES: Final[dict] = {
     "primary_fan_a": {
         "ideal_current": 70,  # 一次风机A理想电流
@@ -134,55 +208,14 @@ FAN_EXPERT_RANGES: Final[dict] = {
     },
 }
 
+# ========== 风煤比配置 ==========
 COAL_AIR_RATIOS: Final[list[tuple]] = [
     (0, 20, 60000, 40000),
     (20, 45, 130000, 75000),
     (45, 68, 160000, 180000),
 ]
 
-CONTROL_PARAMS: Final[list[str]] = [
-    "2LB10CS001",  # 一次风机A转速
-    "APAFCDMD",    # 一次风机A阀门开度
-    "2LB20CS001",  # 一次风机B转速
-    "BPAFCDMD",    # 一次风机B阀门开度
-    "2LB30CS901",  # 二次风机A转速
-    "2LA30A11C01",  # 二次风机A阀门开度
-    "2LB40CS901",  # 二次风机B转速
-    "2LA40A11C01",  # 二次风机B阀门开度
-    "2NC10CS901",  # 引风机A转速
-    "2NC10A11C01",  # 引风机A阀开度
-    "2NC2CS901",  # 引风机B转速
-    "2NC20A11C01",  # 引风机B阀门开度
-    "D62AX002",  # 给煤量
-]
-
-KEY_PARAMS_FOR_STATS: Final[list[str]] = [
-    "D62AX002",  # 给煤量
-    "D66P53A10",  # 含氧量1
-    "D61AX023",  # 一次风风量
-    "D61AX024",  # 二次风风量
-    "2LA10CT11",  # 出风温1
-    "2LA2CT11",  # 出风温2
-    "2LB30CS901",  # 二次风机A转速
-    "2BBA13Q11",  # 二次风机A电流
-    "2LA30A12C11",  # 二次风机A输出
-    "2LB40CS901",  # 二次风机B转速
-    "2BBB11Q11",  # 二次风机B电流
-    "2LA40A12C11",  # 二次风机B输出
-    "2LB10CS001",  # 一次风机A转速
-    "2BBA14Q11",  # 一次风机A电流
-    "2LA10A12C11",  # 一次风机A输出
-    "2LB20CS001",  # 一次风机B转速
-    "2BBB12Q11",  # 一次风机B电流
-    "2LA20A12C11",  # 一次风机B输出
-    "2NC10CS901",  # 引风机A转速
-    "2BBA15Q11",  # 引风机A电流
-    "DPU61AX107",  # 引风机A输出
-    "2NC2CS901",  # 引风机B转速
-    "2BBB13Q11",  # 引风机B电流
-    "DPU61AX108",  # 引风机B输出
-]
-
+# ========== 默认窗口配置 ==========
 DEFAULT_WINDOW_SIZES: Final[list[int]] = [10, 30, 60]
 DEFAULT_STATISTICS: Final[list[str]] = [
     "mean",  # 均值
@@ -197,6 +230,7 @@ DEFAULT_STATISTICS: Final[list[str]] = [
 DEFAULT_LAGS: Final[list[int]] = [1, 5, 10, 30]
 DEFAULT_DIFF_WINDOWS: Final[list[int]] = [10, 30]
 
+# ========== 多步预测配置 ==========
 MULTISTEP_CONFIG: Final[dict] = {
     "default_horizons": [1, 2, 3, 5, 7, 10],
     "max_horizon": 10,
@@ -205,6 +239,7 @@ MULTISTEP_CONFIG: Final[dict] = {
     "default_mode": "direct",
 }
 
+# ========== 历史趋势配置 ==========
 HISTORY_TREND_CONFIG: Final[dict] = {
     "target_vars": ["2BK10CP004", "2BK10CQ1"],
     "history_lags": [1, 2, 3, 5, 10, 20, 30],
@@ -214,6 +249,7 @@ HISTORY_TREND_CONFIG: Final[dict] = {
     "momentum_windows": [5, 10, 20],
 }
 
+# ========== GPU配置 ==========
 GPU_CONFIG: Final[dict] = {
     "xgboost_use_gpu": True,
     "xgboost_device": "cuda",
@@ -222,9 +258,9 @@ GPU_CONFIG: Final[dict] = {
     "parallel_training": True,
 }
 
-
+# ========== 特征模式 ==========
 SELF_DERIVED_PATTERNS = [
-    "_lag_", "_trend_slope_", "_trend_accel_", 
+    "_lag_", "_trend_slope_", "_trend_accel_",
     "_mean_", "_std_", "_diff", "_change"
 ]
 

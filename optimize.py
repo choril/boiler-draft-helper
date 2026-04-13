@@ -1,52 +1,41 @@
 #!/usr/bin/env python3
 """
 风机控制参数优化脚本
-
-基于已训练的 LSTM 多步预测模型，使用高级优化算法找到最优控制参数。
-
-支持优化方法:
-1. bayesian (TPE) - 贝叶斯优化，适合有限评估预算
-2. NSGA-II - 多目标优化，生成 Pareto 前沿
-3. gradient - 梯度下降，基于 TensorFlow 自动微分
-4. hybrid - 混合优化，自动选择最优算法
-5. mpc - 滚动时域优化，适合实时控制
 """
 
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-import argparse
 import json
 import time
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime
-
+import joblib
+import argparse
 import numpy as np
 import pandas as pd
-import joblib
+from pathlib import Path
+from datetime import datetime
 import matplotlib.pyplot as plt
-import tensorflow as tf
+from typing import Dict, List, Optional, Tuple, Any
 
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+import tensorflow as tf
 tf.get_logger().setLevel("ERROR")
 
 from src.utils.config import (
     PRESSURE_MAIN,
-    OXYGEN_MAIN,
-    CONTROL_PARAMS,
-    EXPERT_RANGES,
+    OXYGEN_MAIN
 )
-from src.modeling.lstm import LSTM, setup_gpu
+from src.modeling.lstm import LSTM
 from src.modeling.optimization import (
     OptimizationConfig,
-    OptimizationResult,
     SceneDetector,
     create_optimizer,
     ControlRecommender,
 )
 from src.features.selector import FeatureSelector
-from src.utils.utils import print_section
+from src.utils.utils import print_section, setup_gpu
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # =============================================================================
@@ -61,7 +50,7 @@ def load_trained_model(
     gpu_strategy: tf.distribute.Strategy,
 ) -> Tuple[LSTM, Any, Any, List[str]]:
     """加载已训练的模型和相关组件"""
-    print_section("加载模型")
+    logger.info("加载模型")
 
     # 加载特征选择结果
     with open(selected_features_path, "r") as f:
@@ -71,19 +60,19 @@ def load_trained_model(
     if not selected_features:
         raise ValueError(f"未找到特征选择结果: {selected_features_path}")
 
-    print(f"特征数量: {len(selected_features)}")
+    logger.info(f"特征数量: {len(selected_features)}")
 
     # 加载标准化器
     scaler = joblib.load(scaler_path)
     target_scaler = joblib.load(target_scaler_path)
-    print(f"标准化器加载成功")
+    logger.info("标准化器加载成功")
 
     # 加载模型配置
     config_path = model_path / "config.json"
     if config_path.exists():
         with open(config_path, "r") as f:
             model_config = json.load(f)
-        print(f"模型配置: {model_config}")
+        logger.info(f"模型配置: {model_config}")
     else:
         # 默认配置
         model_config = {
@@ -96,6 +85,7 @@ def load_trained_model(
             "l2_reg": 1e-4,
             "smoothness_weight": 0.001,
         }
+        logger.warning(f"未找到模型配置文件，使用默认配置: {model_config}")
 
     # 加载模型
     model = LSTM(
@@ -115,12 +105,12 @@ def load_trained_model(
     keras_path = model_path / "model.keras"
     if keras_path.exists():
         model.model.load_weights(str(keras_path))
-        print(f"模型权重加载成功: {keras_path}")
+        logger.info(f"模型权重加载成功: {keras_path}")
     else:
         raise FileNotFoundError(f"模型文件不存在: {keras_path}")
 
-    print(f"模型输入形状: {model.model.input_shape}")
-    print(f"模型输出形状: {model.model.output_shape}")
+    logger.info(f"模型输入形状: {model.model.input_shape}")
+    logger.info(f"模型输出形状: {model.model.output_shape}")
 
     return model, scaler, target_scaler, selected_features
 
@@ -174,9 +164,9 @@ def run_single_optimization(
     """在单个场景上运行优化"""
     start_idx = scene_info["start_idx"]
 
-    print(f"\n场景 [{start_idx}:{start_idx + seq_length}]")
-    print(f"  负压均值: {scene_info['pressure_mean']:.2f} Pa, 标准差: {scene_info['pressure_std']:.2f}")
-    print(f"  含氧量均值: {scene_info['oxygen_mean']:.2f}%, 标准差: {scene_info['oxygen_std']:.2f}")
+    logger.info(f"场景 [{start_idx}:{start_idx + seq_length}]")
+    logger.info(f"负压均值: {scene_info['pressure_mean']:.2f} Pa, 标准差: {scene_info['pressure_std']:.2f}")
+    logger.info(f"含氧量均值: {scene_info['oxygen_mean']:.2f}%, 标准差: {scene_info['oxygen_std']:.2f}")
 
     # 获取特征数据
     feature_data = feature_matrix[selected_features].iloc[
@@ -249,13 +239,12 @@ def run_optimization_test(
     feature_matrix: pd.DataFrame,
     raw_data: pd.DataFrame,
     config: OptimizationConfig,
-    output_dir: Path,
     scene_type: str = "volatile",
     top_k: int = 5,
-    method: str = "hybrid",
+    method: str = "bayesian",
 ) -> Dict:
     """运行优化测试"""
-    print_section(f"场景测试: {scene_type}")
+    logger.info(f"场景测试: {scene_type}")
 
     # 场景检测
     detector = SceneDetector(
@@ -264,10 +253,10 @@ def run_optimization_test(
         window_size=60,
     )
     scenes = detector.get_top_scenes(raw_data, scene_type, top_k)
-    print(f"检测到 {len(scenes)} 个 {scene_type} 场景")
+    logger.info(f"检测到 {len(scenes)} 个 {scene_type} 场景")
 
     if not scenes:
-        print(f"未找到 {scene_type} 场景")
+        logger.warning(f"未找到 {scene_type} 场景")
         return {"scene_type": scene_type, "results": []}
 
     # 创建优化器和推荐器
@@ -590,8 +579,8 @@ def main():
     parser.add_argument("--output-dir", type=str, default="output/optimization")
 
     # 优化参数
-    parser.add_argument("--method", type=str, default="hybrid",
-                        choices=["bayesian", "TPE", "NSGA-II", "gradient", "hybrid", "mpc"],
+    parser.add_argument("--method", type=str, default="bayesian",
+                        choices=["bayesian", "hierarchical", "hybrid_two_stage", "NSGA-II"],
                         help="优化方法")
     parser.add_argument("--top-k", type=int, default=5, help="每个场景类型的测试数量")
     parser.add_argument("--scene-types", type=str, default="volatile,stable",
@@ -602,8 +591,8 @@ def main():
     parser.add_argument("--pressure-min", type=float, default=-150.0)
     parser.add_argument("--pressure-max", type=float, default=-80.0)
     parser.add_argument("--oxygen-target", type=float, default=2.0)
-    parser.add_argument("--oxygen-min", type=float, default=1.7)
-    parser.add_argument("--oxygen-max", type=float, default=2.3)
+    parser.add_argument("--oxygen-min", type=float, default=1.5)
+    parser.add_argument("--oxygen-max", type=float, default=2.5)
 
     # 优化配置
     parser.add_argument("--n-trials", type=int, default=50, help="贝叶斯优化试验次数")
@@ -614,11 +603,9 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 初始化 GPU
-    print_section("初始化 GPU")
+    logger.info("初始化 GPU")
     gpu_strategy = setup_gpu(gpus="all", memory_growth=True)
 
-    # 加载模型
     model_path = Path(args.model)
     model, scaler, target_scaler, selected_features = load_trained_model(
         model_path=model_path,
@@ -628,21 +615,18 @@ def main():
         gpu_strategy=gpu_strategy,
     )
 
-    # 加载特征数据
-    print_section("加载特征数据")
+    logger.info("加载特征数据")
     if Path(args.features).exists():
         feature_matrix = pd.read_feather(args.features)
     else:
         raise FileNotFoundError(f"特征矩阵不存在: {args.features}")
 
-    print(f"特征矩阵维度: {feature_matrix.shape}")
+    logger.info(f"特征矩阵维度: {feature_matrix.shape}")
 
-    # 加载原始数据（用于场景检测）
-    print_section("加载原始数据")
+    logger.info("加载原始数据")
     raw_data = pd.read_feather(args.data)
-    print(f"原始数据维度: {raw_data.shape}")
+    logger.info(f"原始数据维度: {raw_data.shape}")
 
-    # 优化配置
     config = OptimizationConfig(
         pressure_target=args.pressure_target,
         pressure_min=args.pressure_min,
@@ -654,7 +638,6 @@ def main():
         max_iterations=args.max_iter,
     )
 
-    # 运行优化测试
     scene_types = [s.strip() for s in args.scene_types.split(",")]
     all_results = []
 
@@ -667,7 +650,6 @@ def main():
             feature_matrix=feature_matrix,
             raw_data=raw_data,
             config=config,
-            output_dir=output_dir,
             scene_type=scene_type,
             top_k=args.top_k,
             method=args.method,
@@ -695,7 +677,7 @@ def main():
     results_path = output_dir / "optimization_test_results.json"
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False, default=str)
-    print(f"\n完整结果已保存: {results_path}")
+    logger.info(f"\n完整结果已保存: {results_path}")
 
     # 打印最优参数
     print_optimal_parameters(all_results)
@@ -703,7 +685,7 @@ def main():
     # 生成汇总报告
     generate_summary_report(all_results, output_dir)
 
-    print_section("测试完成")
+    logger.info("测试完成")
 
 
 if __name__ == "__main__":

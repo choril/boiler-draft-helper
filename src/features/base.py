@@ -56,7 +56,7 @@ class FeatureExtractorPipeline:
             all_features.append(df)
 
         for extractor in tqdm(self.extractors, desc="特征提取"):
-            print(f"  提取 {extractor.name} 特征...")
+            print(f"提取 {extractor.name} 特征...")
             features = extractor.extract(df, **kwargs)
             features = self._rename_duplicates(features, seen_columns)
             all_features.append(features)

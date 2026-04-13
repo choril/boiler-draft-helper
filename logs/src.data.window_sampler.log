@@ -1,0 +1,22 @@
+2026-04-14 00:54:28 - src.data.window_sampler - INFO - window_sampler.py:98 - 加载数据: output/all_data_cleaned.feather
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:134 - 数据维度: (585939, 52)
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:135 - 目标变量(Y): 7 维
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:136 - 控制变量(U): 7 维
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:137 - 状态变量(X): 38 维
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:479 - 构建NARX样本（包含未来控制）
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:222 - 
+负压跳变检测（阈值=150.0Pa）:
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:223 -   检测到跳变点: 8411 个
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:224 -   受影响时间段: 2012 个
+2026-04-14 00:54:29 - src.data.window_sampler - INFO - window_sampler.py:225 -   受影响时间点: 215339 (36.8%)
+2026-04-14 01:05:51 - src.data.window_sampler - INFO - window_sampler.py:534 - 
+样本过滤统计:
+2026-04-14 01:05:51 - src.data.window_sampler - INFO - window_sampler.py:535 -   可能样本总数: 585905
+2026-04-14 01:05:51 - src.data.window_sampler - INFO - window_sampler.py:536 -   有效样本数: 310475 (53.0%)
+2026-04-14 01:05:51 - src.data.window_sampler - INFO - window_sampler.py:537 -   过滤样本数: 275430 (47.0%)
+2026-04-14 01:05:52 - src.data.window_sampler - INFO - window_sampler.py:586 - 
+NARX样本构建完成:
+2026-04-14 01:05:52 - src.data.window_sampler - INFO - window_sampler.py:587 -   编码器输入: (310475, 30, 52)
+2026-04-14 01:05:52 - src.data.window_sampler - INFO - window_sampler.py:588 -   解码器输入: (310475, 5, 7)
+2026-04-14 01:05:52 - src.data.window_sampler - INFO - window_sampler.py:589 -   目标输出: (310475, 5, 7)
+2026-04-14 01:05:52 - src.data.window_sampler - INFO - window_sampler.py:591 -   已跳过跳变时间段

@@ -35,7 +35,7 @@ class Logger:
 
     def __init__(self):
         self.logger = None
-        SCRIPT_DIR = Path(__file__).resolve().parent
+        SCRIPT_DIR = Path(__file__).resolve().parent.parent
         PROJECT_ROOT = SCRIPT_DIR.parent
         self.log_dir = PROJECT_ROOT / "logs"
 

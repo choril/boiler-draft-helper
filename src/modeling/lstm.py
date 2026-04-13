@@ -2,7 +2,7 @@
 LSTM模型 - Query-based 多步预测架构
 
 架构：
-1. 单层Bi-LSTM编码器（避免过拟合）
+1. 单层Bi-LSTM编码器
 2. Query-based解码器（可学习查询向量 + Cross-Attention）
 3. 物理约束损失（平滑性）
 4. 增强的物理耦合层
@@ -25,6 +25,7 @@ from tensorflow.keras import layers, callbacks, optimizers
 
 from src.utils.utils import physics_guided_loss
 from src.utils.logger import get_logger
+from src.utils.config import NORMALIZED_RANGES
 logger = get_logger(__name__)
 
 # =============================================================================
@@ -34,11 +35,10 @@ logger = get_logger(__name__)
 class PhysicsCouplingLayer(layers.Layer):
     """物理耦合层 - 建模负压和含氧量的非线性交互"""
 
-    def __init__(self, units: int = 32, **kwargs):
+    def __init__(self, units: int = 32, coupling_strength: float = 0.1, **kwargs):
         super().__init__(**kwargs)
         self.units = units
-
-    def build(self, input_shape):
+        self.coupling_strength = coupling_strength
         self.shared = layers.Dense(self.units, activation="relu", name="shared")
         self.p_gate = layers.Dense(self.units, activation="sigmoid", name="p_gate")
         self.o_gate = layers.Dense(self.units, activation="sigmoid", name="o_gate")
@@ -56,15 +56,15 @@ class PhysicsCouplingLayer(layers.Layer):
         p_to_o = self.o_gate(p_hidden) * o_hidden
         o_to_p = self.p_gate(o_hidden) * p_hidden
 
-        # 融合输出（残差连接，小系数防止过拟合）
-        p_out = p_feat + self.p_proj(o_to_p) * 0.1
-        o_out = o_feat + self.o_proj(p_to_o) * 0.1
+        # 融合输出（残差连接，耦合系数可调）
+        p_out = p_feat + self.p_proj(o_to_p) * self.coupling_strength
+        o_out = o_feat + self.o_proj(p_to_o) * self.coupling_strength
 
         return p_out, o_out
 
     def get_config(self):
         config = super().get_config()
-        config.update({"units": self.units})
+        config.update({"units": self.units, "coupling_strength": self.coupling_strength})
         return config
 
 
@@ -122,6 +122,10 @@ class LSTM:
         strategy: tf.distribute.Strategy | None = None,
         feature_names: list[str] | None = None,
         smoothness_weight: float = 0.001,
+        coupling_strength: float = 0.1,
+        range_weight: float = 0.01,
+        p_range: tuple[float, float] | None = None,
+        o_range: tuple[float, float] | None = None,
     ):
         self.seq_length = seq_length
         self.n_features = n_features
@@ -133,6 +137,11 @@ class LSTM:
         self.strategy = strategy or tf.distribute.get_strategy()
         self.feature_names = feature_names or [f"feature_{i}" for i in range(n_features)]
         self.smoothness_weight = smoothness_weight
+        self.coupling_strength = coupling_strength
+        self.range_weight = range_weight
+        # 使用 config 中标准化后的物理范围作为默认值
+        self.p_range = p_range or NORMALIZED_RANGES["pressure_constraint"]
+        self.o_range = o_range or NORMALIZED_RANGES["oxygen_constraint"]
         self.model: keras.Model | None = None
         self.history: callbacks.History | None = None
         self._build_model()
@@ -146,17 +155,15 @@ class LSTM:
                 name="encoder_input"
             )
 
-            # 特征嵌入（高维时降维）
-            if self.n_features > 64:
+            # 特征嵌入：统一投影到目标维度
+            target_dim = 64
+            if self.n_features != target_dim:
                 x = layers.TimeDistributed(
-                    layers.Dense(64, activation="relu"),
+                    layers.Dense(target_dim, activation="relu"),
                     name="feature_embedding"
                 )(inputs)
             else:
                 x = inputs
-
-            # 输入投影
-            x = layers.Dense(64, activation="relu", name="input_proj")(x)
 
             # === Bi-LSTM Encoder ===
             encoder_out = layers.Bidirectional(
@@ -193,45 +200,64 @@ class LSTM:
             decoder_out = layers.Dropout(self.dropout_rate, name="decoder_dropout")(decoder_out)
 
             # Feed-forward
-            ff = layers.Dense(d_model * 2, activation="gelu", name="ff_dense1")(decoder_out)
+            ff = layers.Dense(
+                d_model * 2, 
+                activation="gelu", 
+                kernel_regularizer=keras.regularizers.l2(self.l2_reg),
+                name="ff_dense1"
+            )(decoder_out)
             ff = layers.Dropout(self.dropout_rate, name="ff_dropout")(ff)
-            ff = layers.Dense(d_model, name="ff_dense2")(ff)
+            ff = layers.Dense(
+                d_model,
+                kernel_regularizer=keras.regularizers.l2(self.l2_reg),
+                name="ff_dense2"
+            )(ff)
             decoder_out = layers.LayerNormalization(name="ff_norm")(decoder_out + ff)
 
             # === 分离预测头 ===
-            # 负压分支（输出头使用较低dropout）
+            # 负压分支
             p_hidden = layers.TimeDistributed(
                 layers.Dense(64, activation="relu"),
                 name="pressure_hidden"
             )(decoder_out)
             p_hidden = layers.TimeDistributed(
-                layers.Dropout(self.dropout_rate * 0.5),
+                layers.Dropout(self.dropout_rate * 0.75),
                 name="pressure_dropout"
             )(p_hidden)
             p_out = layers.TimeDistributed(layers.Dense(1), name="pressure_raw")(p_hidden)
 
-            # 含氧量分支（输出头使用较低dropout）
+            # 含氧量分支
             o_hidden = layers.TimeDistributed(
                 layers.Dense(64, activation="relu"),
                 name="oxygen_hidden"
             )(decoder_out)
             o_hidden = layers.TimeDistributed(
-                layers.Dropout(self.dropout_rate * 0.5),
+                layers.Dropout(self.dropout_rate * 0.75),
                 name="oxygen_dropout"
             )(o_hidden)
             o_out = layers.TimeDistributed(layers.Dense(1), name="oxygen_raw")(o_hidden)
 
             # 物理耦合
-            p_final, o_final = PhysicsCouplingLayer(32, name="physics_coupling")([p_out, o_out])
+            p_final, o_final = PhysicsCouplingLayer(
+                units=32,
+                coupling_strength=self.coupling_strength,
+                name="physics_coupling"
+            )([p_out, o_out])
 
             # 合并输出
             outputs = layers.Concatenate(name="output")([p_final, o_final])
 
             self.model = keras.Model(inputs=inputs, outputs=outputs, name="LSTM")
 
-            # 定义损失函数（闭包传递 smoothness_weight）
+            # 定义损失函数
             def loss_fn(y_true, y_pred):
-                return physics_guided_loss(y_true, y_pred, self.smoothness_weight)
+                return physics_guided_loss(
+                    y_true, y_pred,
+                    smoothness_weight=self.smoothness_weight,
+                    range_weight=self.range_weight,
+                    p_range=self.p_range,
+                    o_range=self.o_range,
+                )
 
             self.model.compile(
                 optimizer=optimizers.Adam(learning_rate=self.learning_rate, clipnorm=1.0),
@@ -314,16 +340,42 @@ class LSTM:
             batch_size = 128 * n_gpus
         return self.model.predict(X, batch_size=batch_size, verbose=0)
 
-    def evaluate(self, X_test: np.ndarray, y_test: np.ndarray, target_scaler=None) -> dict:
-        """评估模型"""
+    def evaluate(
+        self,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        target_scaler=None,
+        target_names: list[str] | None = None,
+    ) -> dict:
+        """评估模型
+
+        Args:
+            X_test: 测试输入
+            y_test: 测试目标
+            target_scaler: 目标变量的标准化器
+            target_names: 目标变量名称列表，默认为 ["Pressure", "Oxygen"]
+        """
         pred = self.predict(X_test)
+        n_targets = y_test.shape[2]  # 动态获取目标数量
+
+        if target_names is None:
+            target_names = ["Pressure", "Oxygen"]
+        if len(target_names) < n_targets:
+            target_names.extend([f"Target {i+1}" for i in range(len(target_names), n_targets)])
 
         results = {"normalized": {}, "original": {}}
 
+        # 构建动态表头
+        header_parts = [f"{'Step':<8}"]
+        for name in target_names[:n_targets]:
+            header_parts.append(f"{f'MAE({name})':<14}")
+        header_parts.append(f"{'RMSE':<12}")
+        header_line = "".join(header_parts)
+
         logger.info("\n各步预测评估 (标准化数据):")
-        logger.info("-" * 60)
-        logger.info(f"{'Step':<8} {'MAE(负压)':<12} {'MAE(含氧量)':<12} {'RMSE':<12}")
-        logger.info("-" * 60)
+        logger.info("-" * (8 + 14 * n_targets + 12))
+        logger.info(header_line)
+        logger.info("-" * (8 + 14 * n_targets + 12))
 
         for s in range(1, self.output_steps + 1):
             pred_s = pred[:, s - 1, :]
@@ -332,32 +384,44 @@ class LSTM:
             mae_per_target = np.mean(np.abs(true_s - pred_s), axis=0)
             rmse = np.sqrt(np.mean((true_s - pred_s) ** 2))
 
-            results["normalized"][str(s)] = {
+            step_results = {
                 "mae": float(np.mean(mae_per_target)),
                 "rmse": float(rmse),
-                "mae_pressure": float(mae_per_target[0]),
-                "mae_oxygen": float(mae_per_target[1]),
             }
-            logger.info(f"{s:<8} {mae_per_target[0]:<12.4f} {mae_per_target[1]:<12.4f} {rmse:<12.4f}")
+            for i, name in enumerate(target_names[:n_targets]):
+                step_results[f"mae_{name}"] = float(mae_per_target[i])
+            results["normalized"][str(s)] = step_results
 
-        logger.info("-" * 60)
+            log_parts = [f"{s:<8}"]
+            for i in range(n_targets):
+                log_parts.append(f"{mae_per_target[i]:<14.4f}")
+            log_parts.append(f"{rmse:<12.4f}")
+            logger.info("".join(log_parts))
+
+        logger.info("-" * (8 + 14 * n_targets + 12))
 
         # 反标准化评估
         if target_scaler is not None:
             n_samples = pred.shape[0]
-            pred_flat = pred.reshape(-1, 2)
-            true_flat = y_test.reshape(-1, 2)
+            pred_flat = pred.reshape(-1, n_targets)
+            true_flat = y_test.reshape(-1, n_targets)
 
             pred_original = target_scaler.inverse_transform(pred_flat)
             true_original = target_scaler.inverse_transform(true_flat)
 
-            pred_original = pred_original.reshape(n_samples, self.output_steps, 2)
-            true_original = true_original.reshape(n_samples, self.output_steps, 2)
+            pred_original = pred_original.reshape(n_samples, self.output_steps, n_targets)
+            true_original = true_original.reshape(n_samples, self.output_steps, n_targets)
+
+            header_parts = [f"{'Step':<8}"]
+            for name in target_names[:n_targets]:
+                header_parts.append(f"{f'MAE{name}':<16}")
+            header_parts.append(f"{'RMSE':<12}")
+            header_line = "".join(header_parts)
 
             logger.info("反标准化后的评估指标:")
-            logger.info("-" * 70)
-            logger.info(f"{'Step':<8} {'MAE负压(Pa)':<16} {'MAE含氧量(%)':<16} {'RMSE':<12}")
-            logger.info("-" * 70)
+            logger.info("-" * (8 + 16 * n_targets + 12))
+            logger.info(header_line)
+            logger.info("-" * (8 + 16 * n_targets + 12))
 
             for s in range(1, self.output_steps + 1):
                 pred_s = pred_original[:, s - 1, :]
@@ -366,23 +430,31 @@ class LSTM:
                 mae_per_target = np.mean(np.abs(true_s - pred_s), axis=0)
                 rmse = np.sqrt(np.mean((true_s - pred_s) ** 2))
 
-                results["original"][str(s)] = {
+                step_results = {
                     "mae": float(np.mean(mae_per_target)),
                     "rmse": float(rmse),
-                    "mae_pressure": float(mae_per_target[0]),
-                    "mae_oxygen": float(mae_per_target[1]),
                 }
-                logger.info(f"{s:<8} {mae_per_target[0]:<16.4f} {mae_per_target[1]:<16.4f} {rmse:<12.4f}")
+                for i, name in enumerate(target_names[:n_targets]):
+                    step_results[f"mae_{name}"] = float(mae_per_target[i])
+                results["original"][str(s)] = step_results
 
-            logger.info("-" * 70)
+                log_parts = [f"{s:<8}"]
+                for i in range(n_targets):
+                    log_parts.append(f"{mae_per_target[i]:<16.4f}")
+                log_parts.append(f"{rmse:<12.4f}")
+                logger.info("".join(log_parts))
 
-            total_pred = pred_original.reshape(-1, 2)
-            total_true = true_original.reshape(-1, 2)
-            results["summary"] = {
-                "mae_pressure_mean": float(np.mean(np.abs(total_true[:, 0] - total_pred[:, 0]))),
-                "mae_oxygen_mean": float(np.mean(np.abs(total_true[:, 1] - total_pred[:, 1]))),
+            logger.info("-" * (8 + 16 * n_targets + 12))
+
+            # 汇总指标
+            total_pred = pred_original.reshape(-1, n_targets)
+            total_true = true_original.reshape(-1, n_targets)
+            summary = {
                 "rmse_mean": float(np.sqrt(np.mean((total_true - total_pred) ** 2))),
             }
+            for i, name in enumerate(target_names[:n_targets]):
+                summary[f"mae_{name}_mean"] = float(np.mean(np.abs(total_true[:, i] - total_pred[:, i])))
+            results["summary"] = summary
 
         return results
 
@@ -403,6 +475,10 @@ class LSTM:
                 "learning_rate": self.learning_rate,
                 "l2_reg": self.l2_reg,
                 "smoothness_weight": self.smoothness_weight,
+                "coupling_strength": self.coupling_strength,
+                "range_weight": self.range_weight,
+                "p_range": list(self.p_range),
+                "o_range": list(self.o_range),
             }, f, indent=2)
         logger.info(f"模型已保存: {path}")
 
@@ -411,15 +487,36 @@ class LSTM:
         path = Path(path)
         with open(path / "config.json", "r") as f:
             config = json.load(f)
+        # 处理 tuple 类型（JSON 存储为 list）
+        if "p_range" in config:
+            config["p_range"] = tuple(config["p_range"])
+        if "o_range" in config:
+            config["o_range"] = tuple(config["o_range"])
         instance = cls(**config, strategy=strategy)
         with instance.strategy.scope():
+            # 加载模型时不加载编译配置（因为损失函数是闭包无法序列化）
             instance.model = keras.models.load_model(
                 path / "model.keras",
                 custom_objects={
                     "PhysicsCouplingLayer": PhysicsCouplingLayer,
                     "PredictStepEmbedding": PredictStepEmbedding,
-                    "physics_guided_loss": physics_guided_loss,
                 },
+                compile=False,  # 不加载编译配置
+            )
+            # 手动重新编译模型
+            def loss_fn(y_true, y_pred):
+                return physics_guided_loss(
+                    y_true, y_pred,
+                    smoothness_weight=instance.smoothness_weight,
+                    range_weight=instance.range_weight,
+                    p_range=instance.p_range,
+                    o_range=instance.o_range,
+                )
+
+            instance.model.compile(
+                optimizer=optimizers.Adam(learning_rate=instance.learning_rate, clipnorm=1.0),
+                loss=loss_fn,
+                metrics=["mae"],
             )
         return instance
 

@@ -2,14 +2,9 @@
 事件期数据清洗模块
 基于人工干预记录表,识别和标记事件期内的数据噪声
 """
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import pandas as pd
 from typing import List
+from pathlib import Path
 from src.utils.logger import get_logger
 
 

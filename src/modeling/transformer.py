@@ -777,9 +777,9 @@ if __name__ == "__main__":
 
     # Build sequences (simplified)
     from src.features.selector import FeatureSelector
-    from src.utils.config import PRESSURE_MAIN, OXYGEN_MAIN
+    from src.utils.config import TARGET_VARIABLES
 
-    selector = FeatureSelector(feature_matrix, target_vars=[PRESSURE_MAIN, OXYGEN_MAIN])
+    selector = FeatureSelector(feature_matrix, target_vars=TARGET_VARIABLES)
     selector.selected_features = features
     selector.fit_scaler(target="targets")
 

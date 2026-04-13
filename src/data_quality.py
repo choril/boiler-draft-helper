@@ -2,7 +2,6 @@
 数据质量评估 Pipeline
 """
 
-import sys
 import json
 import argparse
 import pandas as pd
@@ -10,15 +9,10 @@ from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 from src.utils.logger import get_logger
-from event_period_cleaner import load_intervention_records, EventPeriodCleaner
+from src.event_period_cleaner import load_intervention_records
 
 
 LOGGER = get_logger()
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-OUTPUT_DIR = PROJECT_ROOT / "output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 class Config:
     """配置管理类"""

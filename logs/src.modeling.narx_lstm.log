@@ -1,0 +1,23 @@
+2026-04-14 01:05:54 - src.modeling.narx_lstm - INFO - narx_lstm.py:530 - NARX-LSTM模型创建完成:
+2026-04-14 01:05:54 - src.modeling.narx_lstm - INFO - narx_lstm.py:531 -   目标维度: 7, 控制维度: 7, 状态维度: 38
+2026-04-14 01:05:54 - src.modeling.narx_lstm - INFO - narx_lstm.py:532 -   编码器hidden: 256
+2026-04-14 01:05:54 - src.modeling.narx_lstm - INFO - narx_lstm.py:533 -   解码器hidden: 256
+2026-04-14 01:05:54 - src.modeling.narx_lstm - INFO - narx_lstm.py:534 -   预测步数: 5
+2026-04-14 01:05:54 - src.modeling.narx_lstm - INFO - narx_lstm.py:253 - 训练设备: cuda
+2026-04-14 01:05:55 - src.modeling.narx_lstm - INFO - narx_lstm.py:398 - 开始NARX-LSTM训练
+2026-04-14 01:05:55 - src.modeling.narx_lstm - INFO - narx_lstm.py:399 - 最大epochs: 50, 早停patience: 15
+2026-04-14 01:06:41 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 1/50 - Train Loss: 0.6596, Val Loss: 0.1779
+2026-04-14 01:07:22 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 2/50 - Train Loss: 0.6501, Val Loss: 0.1791
+2026-04-14 01:08:07 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 3/50 - Train Loss: 0.6480, Val Loss: 0.1716
+2026-04-14 01:08:48 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 4/50 - Train Loss: 0.6477, Val Loss: 0.1723
+2026-04-14 01:09:32 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 5/50 - Train Loss: 0.6448, Val Loss: 0.1758
+2026-04-14 01:10:14 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 6/50 - Train Loss: 0.6453, Val Loss: 0.1723
+2026-04-14 01:10:59 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 7/50 - Train Loss: 0.6439, Val Loss: 0.1731
+2026-04-14 01:11:41 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 8/50 - Train Loss: 0.6442, Val Loss: 0.1670
+2026-04-14 01:12:26 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 9/50 - Train Loss: 0.6431, Val Loss: 0.1647
+2026-04-14 01:13:07 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 10/50 - Train Loss: 0.6430, Val Loss: 0.1701
+2026-04-14 01:13:53 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 11/50 - Train Loss: 0.6417, Val Loss: 0.1714
+2026-04-14 01:14:34 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 12/50 - Train Loss: 0.6429, Val Loss: 0.1709
+2026-04-14 01:15:19 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 13/50 - Train Loss: 0.6419, Val Loss: 0.1795
+2026-04-14 01:16:01 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 14/50 - Train Loss: 0.6422, Val Loss: 0.1703
+2026-04-14 01:16:46 - src.modeling.narx_lstm - INFO - narx_lstm.py:415 - Epoch 15/50 - Train Loss: 0.6411, Val Loss: 0.1708

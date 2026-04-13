@@ -1,5 +1,5 @@
 """
-风机控制参数优化模块 - 高级优化算法实现
+风机控制参数优化模块
 
 基于已训练的 LSTM 多步预测模型，实现风机控制参数的最优配置。
 
@@ -12,32 +12,31 @@
 
 目标:
 1. 负压稳定在理想范围 (-150 ~ -80 Pa)，目标值 -115 Pa
-2. 含氧量稳定在理想范围 (1.7% ~ 2.3%)，目标值 2.0%
+2. 含氧量稳定在理想范围 (1.5% ~ 2.5%)，目标值 2.0%
 3. 减少控制参数波动，提高系统稳定性
 """
 
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-
-import numpy as np
-import pandas as pd
-from pathlib import Path
-from typing import Optional, Dict, List, Tuple, Any, Callable
-from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import warnings
+import numpy as np
+import pandas as pd
+from typing import Optional, Dict, List, Tuple, Any
+from dataclasses import dataclass, field
 
 warnings.filterwarnings("ignore")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 import tensorflow as tf
 tf.get_logger().setLevel("ERROR")
 
-from scipy.optimize import minimize, differential_evolution, Bounds
-from scipy.stats import norm
+from scipy.optimize import minimize, Bounds
 
-from src.utils.config import CONTROL_PARAMS, PRESSURE_MAIN, OXYGEN_MAIN, EXPERT_RANGES
+from src.utils.config import CONTROL_PARAMS, PRESSURE_VARIABLES, OXYGEN_VARIABLES, EXPERT_RANGES
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # =============================================================================
@@ -53,8 +52,8 @@ class OptimizationConfig:
     pressure_min: float = -150.0
     pressure_max: float = -80.0
     oxygen_target: float = 2.0
-    oxygen_min: float = 1.7
-    oxygen_max: float = 2.3
+    oxygen_min: float = 1.5
+    oxygen_max: float = 2.5
 
     # 损失函数权重
     pressure_weight: float = 1.0
@@ -67,7 +66,7 @@ class OptimizationConfig:
     min_adjustment: float = 5.0
 
     # 优化参数
-    optimization_horizon: int = 5  # 只考虑前N步预测
+    optimization_horizon: int = 10  # 只考虑前N步预测
     max_iterations: int = 200
     tolerance: float = 1e-6
     n_restarts: int = 5
@@ -88,6 +87,7 @@ class OptimizationConfig:
     mpc_control_horizon: int = 3
 
     # 控制参数物理边界
+    """TODO: 待补充其他参数物理边界"""
     control_bounds: Dict[str, Tuple[float, float]] = field(default_factory=lambda: {
         "2LB10CS001": (200, 980),      # 一次风机A转速
         "2LB20CS001": (200, 980),      # 一次风机B转速
@@ -151,8 +151,8 @@ class SceneDetector:
 
     def __init__(
         self,
-        pressure_col: str = PRESSURE_MAIN,
-        oxygen_col: str = OXYGEN_MAIN,
+        pressure_col: str = PRESSURE_VARIABLES[0],
+        oxygen_col: str = OXYGEN_VARIABLES[0],
         window_size: int = 60,
     ):
         self.pressure_col = pressure_col
@@ -160,10 +160,11 @@ class SceneDetector:
         self.window_size = window_size
 
     def detect_scenes(self, df: pd.DataFrame) -> Dict[str, List[Dict]]:
-        """检测不同运行场景"""
+        """检测不同运行场景 - 综合负压和含氧量波动"""
         scenes = {"stable": [], "volatile": [], "transition": []}
 
         if self.pressure_col not in df.columns or self.oxygen_col not in df.columns:
+            logger.warning("数据中缺少压力或含氧量列，无法进行场景检测！")
             return scenes
 
         pressure = df[self.pressure_col].values
@@ -171,20 +172,33 @@ class SceneDetector:
 
         # 计算滚动标准差
         pressure_std = pd.Series(pressure).rolling(
-            self.window_size, min_periods=1
+            self.window_size, min_periods=self.window_size
+        ).std().values
+        oxygen_std = pd.Series(oxygen).rolling(
+            self.window_size, min_periods=self.window_size
         ).std().values
 
-        valid_std = pressure_std[~np.isnan(pressure_std)]
-        if len(valid_std) == 0:
+        valid_p_std = pressure_std[~np.isnan(pressure_std)]
+        valid_o_std = oxygen_std[~np.isnan(oxygen_std)]
+
+        if len(valid_p_std) == 0 or len(valid_o_std) == 0:
+            logger.warning("没有有效的波动数据，无法进行场景检测！")
             return scenes
 
-        std_low = np.percentile(valid_std, 25)
-        std_high = np.percentile(valid_std, 75)
+        # 计算分位数阈值
+        p_std_low = np.percentile(valid_p_std, 25)
+        p_std_high = np.percentile(valid_p_std, 75)
+        o_std_low = np.percentile(valid_o_std, 25)
+        o_std_high = np.percentile(valid_o_std, 75)
 
         i = 0
         while i < len(pressure) - self.window_size:
-            window_std = pressure_std[i + self.window_size - 1]
-            if np.isnan(window_std):
+            # 检查窗口末尾的标准差是否有效
+            idx_end = i + self.window_size - 1
+            p_window_std = pressure_std[idx_end]
+            o_window_std = oxygen_std[idx_end]
+
+            if np.isnan(p_window_std) or np.isnan(o_window_std):
                 i += 1
                 continue
 
@@ -193,25 +207,39 @@ class SceneDetector:
                 "start_idx": start_idx,
                 "end_idx": end_idx,
                 "pressure_mean": float(np.mean(pressure[start_idx:end_idx])),
-                "pressure_std": float(np.std(pressure[start_idx:end_idx])),
                 "oxygen_mean": float(np.mean(oxygen[start_idx:end_idx])),
-                "oxygen_std": float(np.std(oxygen[start_idx:end_idx])),
+                "pressure_window_std": float(p_window_std),
+                "oxygen_window_std": float(o_window_std),
+                "pressure_std": float(np.std(pressure[start_idx:end_idx], ddof=1)),
+                "oxygen_std": float(np.std(oxygen[start_idx:end_idx], ddof=1)),
             }
 
-            # 根据波动程度分类
-            if window_std < std_low:
-                scene_stats["score"] = float(1.0 - window_std / std_low)
+            # 综合判断：基于相对波动程度（归一化后加权）
+            p_volatility = 0.0
+            o_volatility = 0.0
+            if p_std_high > p_std_low:
+                p_volatility = np.clip((p_window_std - p_std_low) / (p_std_high - p_std_low), 0, 1)
+            if o_std_high > o_std_low:
+                o_volatility = np.clip((o_window_std - o_std_low) / (o_std_high - o_std_low), 0, 1)
+            # 综合波动指数（负压权重 0.7，含氧量权重 0.3）
+            combined_volatility = 0.7 * p_volatility + 0.3 * o_volatility
+
+            if combined_volatility < 0.25:  # 低波动区间
+                scene_stats["score"] = float(1.0 - combined_volatility)
                 scene_stats["type"] = "stable"
+                scene_stats["combined_volatility"] = float(combined_volatility)
                 scenes["stable"].append(scene_stats)
                 i += self.window_size
-            elif window_std > std_high:
-                scene_stats["score"] = float(window_std / std_high)
+            elif combined_volatility > 0.75:  # 高波动区间
+                scene_stats["score"] = float(combined_volatility)
                 scene_stats["type"] = "volatile"
+                scene_stats["combined_volatility"] = float(combined_volatility)
                 scenes["volatile"].append(scene_stats)
-                i += self.window_size // 2
-            else:
-                scene_stats["score"] = 0.5
+                i += self.window_size // 2  # 波动场景密集采样
+            else:  # 过渡区间
+                scene_stats["score"] = float(combined_volatility)
                 scene_stats["type"] = "transition"
+                scene_stats["combined_volatility"] = float(combined_volatility)
                 scenes["transition"].append(scene_stats)
                 i += self.window_size
 
@@ -226,6 +254,7 @@ class SceneDetector:
         """获取前K个特定类型的场景"""
         scenes = self.detect_scenes(df)
         if scene_type not in scenes or not scenes[scene_type]:
+            logger.warning(f"没有检测到 {scene_type} 场景！")
             return []
         return sorted(scenes[scene_type], key=lambda x: x["score"], reverse=True)[:top_k]
 
@@ -282,20 +311,69 @@ class SceneDetector:
 class BaseOptimizer:
     """基础优化器 - 提供通用预测和损失计算接口"""
 
+    # 控制参数名称映射
     PARAM_NAMES_CN = {
-        "2LB10CS001": "一次风机A转速",
-        "2LB20CS001": "一次风机B转速",
-        "2LB30CS901": "二次风机A转速",
-        "2LB40CS901": "二次风机B转速",
-        "2NC10CS901": "引风机A转速",
-        "2NC2CS901": "引风机B转速",
+        # 给煤量
         "D62AX002": "给煤量",
-        "APAFCDMD": "一次风机A阀门开度",
-        "BPAFCDMD": "一次风机B阀门开度",
+        # 二次风机A（调氧量）
+        "2LB30CS901": "二次风机A转速",
+        "2BBA13Q11": "二次风机A电流",
+        "2LA30A12C11": "二次风机A输出频率",
+        "2HLA30CP01": "二次风机A出口压力",
         "2LA30A11C01": "二次风机A阀门开度",
+        # 二次风机B
+        "2LB40CS901": "二次风机B转速",
+        "2BBB11Q11": "二次风机B电流",
+        "2LA40A12C11": "二次风机B输出频率",
+        "2LA40CP01": "二次风机B出口压力",
         "2LA40A11C01": "二次风机B阀门开度",
-        "2NC10A11C01": "引风机A阀开度",
+        # 引风机A（调负压）
+        "2NC10CS901": "引风机A转速",
+        "2BBA15Q11": "引风机A电流",
+        "DPU61AX107": "引风机A输出频率",
+        "2NA10CP004": "引风机A入口压力",
+        "2NC10A11C01": "引风机A阀门开度",
+        # 引风机B
+        "2NC2CS901": "引风机B转速",
+        "2BBB13Q11": "引风机B电流",
+        "DPU61AX108": "引风机B输出频率",
+        "2NA2CP004": "引风机B入口压力",
         "2NC20A11C01": "引风机B阀门开度",
+        # 一次风机A（快速提升负荷）
+        "2LB10CS001": "一次风机A转速",
+        "2BBA14Q11": "一次风机A电流",
+        "2LA10A12C11": "一次风机A输出频率",
+        "2LA10CP01": "一次风机A出口压力",
+        "APAFCDMD": "一次风机A阀门开度",
+        # 一次风机B
+        "2LB20CS001": "一次风机B转速",
+        "2BBB12Q11": "一次风机B电流",
+        "2LA20A12C11": "一次风机B输出频率",
+        "2HLA2CP001": "一次风机B出口压力",
+        "BPAFCDMD": "一次风机B阀门开度",
+    }
+
+    # 监测参数名称映射
+    MONITOR_NAMES_CN = {
+        "MSFLOW": "主蒸汽流量",
+        "D66P53A10": "床温",
+        "D61AX023": "一次风风量",
+        "D61AX024": "二次风风量",
+        "2LA10CT11": "出风温1",
+        "2LA2CT11": "出风温2",
+        "2BK10CP004": "炉膛压力",
+        "2BK10CQ1": "含氧量",
+    }
+
+    # 目标变量名称映射
+    TARGET_NAMES_CN = {
+        "2BK10CP004": "炉膛压力1",
+        "2BK2CP004": "炉膛压力2",
+        "2BK10CP005": "炉膛压力3",
+        "2BK2CP005": "炉膛压力4",
+        "2BK10CQ1": "含氧量1",
+        "2BK2CQ1": "含氧量2",
+        "2BK2CQ2": "含氧量3",
     }
 
     def __init__(
@@ -314,26 +392,27 @@ class BaseOptimizer:
 
         # 建立特征索引映射
         self.feature_to_idx = {name: i for i, name in enumerate(self.feature_names)}
-
-        # 找出模型特征中存在的控制参数
         self.control_param_names = []
         self.control_indices = []
-
         for ctrl in CONTROL_PARAMS:
             if ctrl in self.feature_to_idx:
                 self.control_param_names.append(ctrl)
                 self.control_indices.append(self.feature_to_idx[ctrl])
-
-        print(f"优化器初始化: 找到 {len(self.control_param_names)} 个控制参数")
+        logger.info(f"优化器初始化: 找到 {len(self.control_param_names)} 个控制参数")
         if self.control_param_names:
-            print(f"  控制参数: {self.control_param_names}")
+            logger.info(f"控制参数: {self.control_param_names} : {[self.PARAM_NAMES_CN.get(ctrl, ctrl) for ctrl in self.control_param_names]}")
 
     def _predict(self, features_orig: np.ndarray) -> np.ndarray:
         """预测 - 输入原始特征，输出原始尺度的预测"""
         features_scaled = self.scaler.transform(features_orig)
         features_batch = features_scaled[np.newaxis, :, :]
 
-        pred_scaled = self.model.model(features_batch, training=False).numpy()
+        # 兼容 LSTM 类和 keras 模型
+        if hasattr(self.model, 'model'):
+            pred_scaled = self.model.model(features_batch, training=False).numpy()
+        else:
+            pred_scaled = self.model(features_batch, training=False).numpy()
+
         pred_orig = self.target_scaler.inverse_transform(pred_scaled[0])
 
         horizon = min(self.config.optimization_horizon, len(pred_orig))
@@ -346,7 +425,12 @@ class BaseOptimizer:
         for i in range(len(features_batch)):
             features_scaled[i] = self.scaler.transform(features_batch[i])
 
-        pred_scaled = self.model.model(features_scaled, training=False).numpy()
+        # 兼容 LSTM 类和 keras 模型
+        if hasattr(self.model, 'model'):
+            pred_scaled = self.model.model(features_scaled, training=False).numpy()
+        else:
+            pred_scaled = self.model(features_scaled, training=False).numpy()
+
         pred_orig = np.zeros((len(features_batch), pred_scaled.shape[1], 2))
         for i in range(len(features_batch)):
             pred_orig[i] = self.target_scaler.inverse_transform(pred_scaled[i])
@@ -438,11 +522,17 @@ class BaseOptimizer:
 
             # 确保 lower <= upper（当当前值超出硬边界时）
             if lower > upper:
-                # 使用硬边界或当前值附近的范围
-                lower = max(lower_hard, current - self.config.min_adjustment)
-                upper = min(upper_hard, current + self.config.min_adjustment)
-                # 如果仍然无效，直接使用硬边界
-                if lower > upper:
+                if current < lower_hard:
+                    # 当前值低于下限：下界强制为硬下限，上界给一个小步长让其回归
+                    lower = lower_hard
+                    upper = min(upper_hard, lower_hard + self.config.min_adjustment)
+                elif current > upper_hard:
+                    # 当前值高于上限：上界强制为硬上限，下界给一个小步长让其回归
+                    upper = upper_hard
+                    lower = max(lower_hard, upper_hard - self.config.min_adjustment)
+                else:
+                    # 理论上不会走到这里（在界内时 lower <= upper 必然成立）
+                    # 除非 min_adjustment 大于整个硬边界区间，此时退化为硬边界
                     lower = lower_hard
                     upper = upper_hard
 
@@ -568,19 +658,15 @@ class BayesianOptimizer(BaseOptimizer):
     def _create_sampler(self, method: str):
         """创建 Optuna 采样器"""
         if method == "TPE":
-            return self.optuna.samplers.TPESampler(
-                n_startup_trials=10,
-                multivariate=True,
-            )
+            return self.optuna.samplers.TPESampler(multivariate=True)
         elif method == "CMA-ES":
-            return self.optuna.samplers.CmaEsSampler(
-                n_startup_trials=10,
-            )
+            return self.optuna.samplers.CmaEsSampler(n_startup_trials=10)
         elif method == "GPSampler":
-            # 高斯过程采样器（需要 Optuna >= 3.5）
+            # 高斯过程采样器
             try:
                 return self.optuna.samplers.GPSampler()
             except AttributeError:
+                logger.warning("当前 Optuna 版本不支持 GPSampler，使用 TPE 替代")
                 return self.optuna.samplers.TPESampler()
         else:
             return self.optuna.samplers.TPESampler()
@@ -753,394 +839,6 @@ class MultiObjectiveOptimizer(BaseOptimizer):
         # 根据加权损失选择
         return min(pareto_front, key=lambda x: x["weighted_loss"])
 
-
-# =============================================================================
-# 梯度优化器 (TensorFlow AutoGrad)
-# =============================================================================
-
-class GradientOptimizer(BaseOptimizer):
-    """梯度优化器 - 利用 TensorFlow 自动微分"""
-
-    def __init__(
-        self,
-        model: Any,
-        scaler: Any,
-        target_scaler: Any,
-        feature_names: List[str],
-        config: Optional[OptimizationConfig] = None,
-    ):
-        super().__init__(model, scaler, target_scaler, feature_names, config)
-
-    def optimize(
-        self,
-        features_orig: np.ndarray,
-        learning_rate: float = 0.01,
-        max_iterations: int = 100,
-    ) -> OptimizationResult:
-        """梯度下降优化"""
-        start_time = time.time()
-
-        current_values = self.get_current_control_values(features_orig)
-        bounds = self._build_bounds(current_values)
-
-        predictions_before = self._predict(features_orig)
-        loss_before = self._compute_loss(current_values, features_orig, current_values)
-
-        # 转换为 TensorFlow 变量
-        control_vars = tf.Variable(current_values, dtype=tf.float32)
-        features_tf = tf.constant(features_orig, dtype=tf.float32)
-        bounds_tf = tf.constant(bounds, dtype=tf.float32)
-
-        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
-        @tf.function
-        def compute_loss_tf(control_vals, features):
-            # 更新特征
-            features_updated = tf.identity(features)
-            for i, idx in enumerate(self.control_indices):
-                # 使用 tensor_array 或 scatter_update
-                indices = tf.stack([tf.constant(len(features) - 1), tf.constant(idx)])
-                features_updated = tf.tensor_scatter_nd_update(
-                    features_updated,
-                    [indices],
-                    [control_vals[i]]
-                )
-
-            # 标准化
-            features_scaled = self.scaler.transform(features_updated.numpy())
-            features_batch = tf.constant(features_scaled[np.newaxis, :, :], dtype=tf.float32)
-
-            # 预测
-            pred_scaled = self.model.model(features_batch, training=False)
-            pred_orig = self.target_scaler.inverse_transform(pred_scaled.numpy()[0])
-
-            horizon = min(self.config.optimization_horizon, len(pred_orig))
-            pred = tf.constant(pred_orig[:horizon], dtype=tf.float32)
-
-            # 计算损失
-            pressure_pred = pred[:, 0]
-            oxygen_pred = pred[:, 1]
-
-            pressure_loss = tf.reduce_mean(
-                (pressure_pred - self.config.pressure_target) ** 2
-            ) * self.config.pressure_weight
-
-            oxygen_loss = tf.reduce_mean(
-                (oxygen_pred - self.config.oxygen_target) ** 2
-            ) * self.config.oxygen_weight
-
-            stability_loss = (
-                tf.math.reduce_variance(pressure_pred) +
-                tf.math.reduce_variance(oxygen_pred)
-            ) * self.config.stability_weight
-
-            smoothness_loss = tf.reduce_sum(
-                (control_vals - tf.constant(current_values, dtype=tf.float32)) ** 2
-            ) * self.config.smoothness_weight
-
-            return pressure_loss + oxygen_loss + stability_loss + smoothness_loss
-
-        # 优化循环
-        n_evaluations = 0
-        best_loss = float('inf')
-        best_controls = current_values.copy()
-
-        for iteration in range(max_iterations):
-            with tf.GradientTape() as tape:
-                loss = compute_loss_tf(control_vars, features_tf)
-
-            gradients = tape.gradient(loss, control_vars)
-            optimizer.apply_gradients([(gradients, control_vars)])
-
-            # 应用边界约束
-            control_clipped = tf.clip_by_value(
-                control_vars,
-                tf.constant([b[0] for b in bounds], dtype=tf.float32),
-                tf.constant([b[1] for b in bounds], dtype=tf.float32),
-            )
-            control_vars.assign(control_clipped)
-
-            n_evaluations += 1
-            current_loss = float(loss.numpy())
-
-            if current_loss < best_loss:
-                best_loss = current_loss
-                best_controls = control_vars.numpy().copy()
-
-            # 早停
-            if iteration > 10 and current_loss < self.config.tolerance:
-                break
-
-        optimal_values = best_controls
-
-        # 计算优化后预测
-        features_optimized = features_orig.copy()
-        for i, idx in enumerate(self.control_indices):
-            features_optimized[-1, idx] = optimal_values[i]
-
-        predictions_after = self._predict(features_optimized)
-        loss_after = best_loss
-
-        elapsed_time = time.time() - start_time
-        improvement = max(0, (loss_before - loss_after) / (loss_before + 1e-8))
-
-        return OptimizationResult(
-            optimal_values={ctrl: float(optimal_values[i]) for i, ctrl in enumerate(self.control_param_names)},
-            adjustments={ctrl: float(optimal_values[i] - current_values[i]) for i, ctrl in enumerate(self.control_param_names)},
-            predicted_pressure=predictions_after[:, 0],
-            predicted_oxygen=predictions_after[:, 1],
-            loss_before=float(loss_before),
-            loss_after=float(loss_after),
-            improvement_ratio=float(improvement),
-            method="Gradient-Adam",
-            converged=True,
-            n_evaluations=n_evaluations,
-            elapsed_time=elapsed_time,
-            predictions_before=predictions_before,
-            predictions_after=predictions_after,
-        )
-
-
-# =============================================================================
-# 混合优化器 (自动选择最优算法)
-# =============================================================================
-
-class HybridOptimizer(BaseOptimizer):
-    """混合优化器 - 自动选择最优算法组合"""
-
-    def __init__(
-        self,
-        model: Any,
-        scaler: Any,
-        target_scaler: Any,
-        feature_names: List[str],
-        config: Optional[OptimizationConfig] = None,
-    ):
-        super().__init__(model, scaler, target_scaler, feature_names, config)
-
-        # 初始化子优化器
-        self.bayesian_optimizer = BayesianOptimizer(
-            model, scaler, target_scaler, feature_names, config
-        )
-        self.gradient_optimizer = GradientOptimizer(
-            model, scaler, target_scaler, feature_names, config
-        )
-
-    def optimize(
-        self,
-        features_orig: np.ndarray,
-        strategy: str = "auto",
-    ) -> OptimizationResult:
-        """混合优化 - 自动选择或组合算法"""
-        start_time = time.time()
-
-        current_values = self.get_current_control_values(features_orig)
-
-        if strategy == "auto":
-            # 根据控制参数数量自动选择策略
-            n_controls = len(self.control_param_names)
-            if n_controls <= 3:
-                strategy = "bayesian"
-            elif n_controls <= 7:
-                strategy = "hybrid"
-            else:
-                strategy = "gradient"
-
-        results = []
-
-        if strategy in ["bayesian", "hybrid"]:
-            try:
-                result_bayes = self.bayesian_optimizer.optimize(features_orig, "TPE")
-                results.append(result_bayes)
-            except Exception as e:
-                print(f"贝叶斯优化失败: {e}")
-
-        if strategy in ["scipy", "hybrid"]:
-            result_scipy = self._scipy_optimize(features_orig)
-            results.append(result_scipy)
-
-        if strategy in ["gradient", "hybrid"]:
-            try:
-                result_grad = self.gradient_optimizer.optimize(features_orig)
-                results.append(result_grad)
-            except Exception as e:
-                print(f"梯度优化失败: {e}")
-
-        # 选择最优结果
-        if not results:
-            # 使用当前值作为默认结果
-            return self._create_default_result(features_orig, current_values)
-
-        best_result = min(results, key=lambda x: x.loss_after)
-
-        # 标记策略
-        best_result.method = f"Hybrid-{strategy}"
-        best_result.elapsed_time = time.time() - start_time
-
-        return best_result
-
-    def _scipy_optimize(self, features_orig: np.ndarray) -> OptimizationResult:
-        """Scipy L-BFGS-B 优化"""
-        start_time = time.time()
-
-        current_values = self.get_current_control_values(features_orig)
-        bounds = self._build_scipy_bounds(current_values)
-
-        predictions_before = self._predict(features_orig)
-        loss_before = self._compute_loss(current_values, features_orig, current_values)
-
-        best_result = None
-        best_loss = float('inf')
-
-        for restart in range(self.config.n_restarts):
-            x0 = current_values if restart == 0 else np.array([
-                np.random.uniform(bounds.lb[i], bounds.ub[i])
-                for i in range(len(current_values))
-            ])
-
-            try:
-                result = minimize(
-                    self._compute_loss,
-                    x0,
-                    args=(features_orig, current_values),
-                    method="L-BFGS-B",
-                    bounds=bounds,
-                    options={
-                        "maxiter": self.config.max_iterations,
-                        "ftol": self.config.tolerance,
-                    },
-                )
-
-                if result.fun < best_loss:
-                    best_loss = result.fun
-                    best_result = result
-            except Exception:
-                continue
-
-        if best_result is None:
-            best_result = type('obj', (object,), {
-                'x': current_values, 'fun': loss_before, 'success': False
-            })()
-
-        optimal_values = best_result.x
-
-        features_optimized = features_orig.copy()
-        for i, idx in enumerate(self.control_indices):
-            features_optimized[-1, idx] = optimal_values[i]
-
-        predictions_after = self._predict(features_optimized)
-        loss_after = best_result.fun
-
-        elapsed_time = time.time() - start_time
-        improvement = max(0, (loss_before - loss_after) / (loss_before + 1e-8))
-
-        return OptimizationResult(
-            optimal_values={ctrl: float(optimal_values[i]) for i, ctrl in enumerate(self.control_param_names)},
-            adjustments={ctrl: float(optimal_values[i] - current_values[i]) for i, ctrl in enumerate(self.control_param_names)},
-            predicted_pressure=predictions_after[:, 0],
-            predicted_oxygen=predictions_after[:, 1],
-            loss_before=float(loss_before),
-            loss_after=float(loss_after),
-            improvement_ratio=float(improvement),
-            method="L-BFGS-B",
-            converged=bool(best_result.success),
-            n_evaluations=best_result.nfev if hasattr(best_result, 'nfev') else 0,
-            elapsed_time=elapsed_time,
-            predictions_before=predictions_before,
-            predictions_after=predictions_after,
-        )
-
-    def _create_default_result(
-        self,
-        features_orig: np.ndarray,
-        current_values: np.ndarray,
-    ) -> OptimizationResult:
-        """创建默认结果"""
-        predictions = self._predict(features_orig)
-        loss = self._compute_loss(current_values, features_orig, current_values)
-
-        return OptimizationResult(
-            optimal_values={ctrl: float(current_values[i]) for i, ctrl in enumerate(self.control_param_names)},
-            adjustments={ctrl: 0.0 for ctrl in self.control_param_names},
-            predicted_pressure=predictions[:, 0],
-            predicted_oxygen=predictions[:, 1],
-            loss_before=float(loss),
-            loss_after=float(loss),
-            improvement_ratio=0.0,
-            method="Default",
-            converged=False,
-            predictions_before=predictions,
-            predictions_after=predictions,
-        )
-
-
-# =============================================================================
-# 滚动时域优化器 (MPC-like)
-# =============================================================================
-
-class RollingHorizonOptimizer(BaseOptimizer):
-    """滚动时域优化器 - 类 MPC 实时控制"""
-
-    def __init__(
-        self,
-        model: Any,
-        scaler: Any,
-        target_scaler: Any,
-        feature_names: List[str],
-        config: Optional[OptimizationConfig] = None,
-    ):
-        super().__init__(model, scaler, target_scaler, feature_names, config)
-        self.hybrid_optimizer = None  # 按需初始化
-
-    def optimize(
-        self,
-        features_orig: np.ndarray,
-        n_steps: int = 3,
-    ) -> List[OptimizationResult]:
-        """滚动优化 - 逐步调整控制参数"""
-        if self.hybrid_optimizer is None:
-            self.hybrid_optimizer = HybridOptimizer(
-                self.model, self.scaler, self.target_scaler,
-                self.feature_names, self.config
-            )
-
-        results = []
-        features_current = features_orig.copy()
-
-        for step in range(n_steps):
-            result = self.hybrid_optimizer.optimize(features_current, "hybrid")
-            result.method = f"MPC-Step{step+1}"
-            results.append(result)
-
-            # 更新特征（应用最优控制）
-            for ctrl, value in result.optimal_values.items():
-                if ctrl in self.feature_to_idx:
-                    features_current[-1, self.feature_to_idx[ctrl]] = value
-
-        return results
-
-    def get_final_recommendation(
-        self,
-        rolling_results: List[OptimizationResult],
-    ) -> OptimizationResult:
-        """从滚动优化结果中提取最终推荐"""
-        if not rolling_results:
-            raise ValueError("滚动优化结果为空")
-
-        # 取最后一步的结果
-        final = rolling_results[-1]
-
-        # 计算累计改善
-        total_improvement = 0.0
-        for r in rolling_results:
-            total_improvement += r.improvement_ratio
-
-        final.improvement_ratio = min(total_improvement, 1.0)
-        final.method = "MPC-Final"
-
-        return final
-
-
 # =============================================================================
 # 控制推荐器
 # =============================================================================
@@ -1296,6 +994,648 @@ class ControlRecommender:
 
 
 # =============================================================================
+# 分组贝叶斯优化器 (Hierarchical Optimization)
+# =============================================================================
+
+class HierarchicalBayesianOptimizer(BaseOptimizer):
+    """
+    分组贝叶斯优化器 - 基于专家经验的分层优化策略
+
+    核心思想:
+    1. 氧含量调节 → 仅优化二次风机参数 (二次风机A/B转速和阀门)
+    2. 负压调节 → 仅优化引风机参数 (引风机A/B转速和阀门)
+
+    优势:
+    - 降低参数维度 (13维 → 4维/4维)，提高优化效率
+    - 符合实际操作逻辑，便于执行
+    - 减少参数耦合干扰
+    """
+
+    # 控制参数分组定义
+    CONTROL_GROUPS = {
+        "oxygen": {
+            "description": "氧含量调节组 - 二次风机参数",
+            "params": [
+                "2LB30CS901",   # 二次风机A转速
+                "2LA30A11C01",  # 二次风机A阀门开度
+                "2LB40CS901",   # 二次风机B转速
+                "2LA40A11C01",  # 二次风机B阀门开度
+            ],
+            "target": "oxygen",
+            "target_value": 2.0,
+            "weight": 0.5,
+        },
+        "pressure": {
+            "description": "负压调节组 - 引风机参数",
+            "params": [
+                "2NC10CS901",   # 引风机A转速
+                "2NC10A11C01",  # 引风机A阀开度
+                "2NC2CS901",    # 引风机B转速
+                "2NC20A11C01",  # 引风机B阀门开度
+            ],
+            "target": "pressure",
+            "target_value": -115.0,
+            "weight": 1.0,
+        },
+        "load": {
+            "description": "负荷调节组 - 一次风机和给煤量",
+            "params": [
+                "2LB10CS001",   # 一次风机A转速
+                "APAFCDMD",     # 一次风机A阀门开度
+                "2LB20CS001",   # 一次风机B转速
+                "BPAFCDMD",     # 一次风机B阀门开度
+                "D62AX002",     # 给煤量
+            ],
+            "target": "both",
+            "target_value": None,
+            "weight": 0.3,
+        },
+    }
+
+    def __init__(
+        self,
+        model: Any,
+        scaler: Any,
+        target_scaler: Any,
+        feature_names: List[str],
+        config: Optional[OptimizationConfig] = None,
+    ):
+        super().__init__(model, scaler, target_scaler, feature_names, config)
+
+        try:
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            self.optuna = optuna
+        except ImportError:
+            raise ImportError("请安装 optuna: pip install optuna")
+
+        # 构建参数组索引映射
+        self._build_group_indices()
+
+    def _build_group_indices(self):
+        """构建参数组的特征索引映射"""
+        self.group_indices = {}
+
+        for group_name, group_info in self.CONTROL_GROUPS.items():
+            indices = []
+            params_in_features = []
+            for param in group_info["params"]:
+                if param in self.feature_to_idx:
+                    indices.append(self.feature_to_idx[param])
+                    params_in_features.append(param)
+
+            if indices:
+                self.group_indices[group_name] = {
+                    "indices": indices,
+                    "params": params_in_features,
+                    "info": group_info,
+                }
+
+        logger.info(f"分组优化器初始化: 建立了 {len(self.group_indices)} 个参数组")
+        for name, info in self.group_indices.items():
+            logger.info(f"  {name}组: {len(info['params'])} 个参数 - {info['params']}")
+
+    def optimize(
+        self,
+        features_orig: np.ndarray,
+        strategy: str = "sequential",
+        n_trials_per_group: int = 30,
+    ) -> OptimizationResult:
+        """
+        分组优化
+
+        Args:
+            features_orig: 原始特征数组
+            strategy: 优化策略
+                - "sequential": 序贯优化，先氧量后负压
+                - "parallel": 并行优化两组参数
+                - "pressure_first": 先负压后氧量
+            n_trials_per_group: 每组参数的优化试验次数
+
+        Returns:
+            OptimizationResult: 优化结果
+        """
+        start_time = time.time()
+
+        current_values = self.get_current_control_values(features_orig)
+        predictions_before = self._predict(features_orig)
+        loss_before = self._compute_loss(current_values, features_orig, current_values)
+
+        # 根据策略确定优化顺序
+        if strategy == "pressure_first":
+            order = ["pressure", "oxygen"]
+        elif strategy == "parallel":
+            order = ["pressure", "oxygen"]  # 并行执行
+        else:  # sequential
+            order = ["oxygen", "pressure"]
+
+        # 执行分组优化
+        features_current = features_orig.copy()
+        group_results = {}
+
+        if strategy == "parallel":
+            # 并行优化两组
+            group_results = self._parallel_group_optimize(
+                features_orig, n_trials_per_group
+            )
+            # 合并结果
+            features_optimized = features_orig.copy()
+            for group_name, result in group_results.items():
+                for param, value in result["optimal_values"].items():
+                    if param in self.feature_to_idx:
+                        features_optimized[-1, self.feature_to_idx[param]] = value
+        else:
+            # 序贯优化
+            for group_name in order:
+                if group_name not in self.group_indices:
+                    continue
+
+                result = self._optimize_single_group(
+                    features_current, group_name, n_trials_per_group
+                )
+                group_results[group_name] = result
+
+                # 更新特征用于下一组优化
+                for param, value in result["optimal_values"].items():
+                    if param in self.feature_to_idx:
+                        features_current[-1, self.feature_to_idx[param]] = value
+
+            features_optimized = features_current
+
+        # 计算最终结果
+        predictions_after = self._predict(features_optimized)
+        optimal_values = {}
+        adjustments = {}
+
+        for group_name, result in group_results.items():
+            for param, value in result["optimal_values"].items():
+                optimal_values[param] = value
+                adjustments[param] = result["adjustments"].get(param, 0.0)
+
+        # 补充未优化的参数（保持原值）
+        for ctrl in self.control_param_names:
+            if ctrl not in optimal_values:
+                optimal_values[ctrl] = float(features_orig[-1, self.feature_to_idx.get(ctrl, 0)])
+                adjustments[ctrl] = 0.0
+
+        loss_after = self._compute_loss(
+            np.array([optimal_values.get(ctrl, 0) for ctrl in self.control_param_names]),
+            features_orig, current_values
+        )
+
+        elapsed_time = time.time() - start_time
+        improvement = max(0, (loss_before - loss_after) / (loss_before + 1e-8))
+
+        return OptimizationResult(
+            optimal_values=optimal_values,
+            adjustments=adjustments,
+            predicted_pressure=predictions_after[:, 0],
+            predicted_oxygen=predictions_after[:, 1],
+            loss_before=float(loss_before),
+            loss_after=float(loss_after),
+            improvement_ratio=float(improvement),
+            method=f"Hierarchical-{strategy}",
+            converged=True,
+            n_evaluations=n_trials_per_group * len(group_results),
+            elapsed_time=elapsed_time,
+            predictions_before=predictions_before,
+            predictions_after=predictions_after,
+        )
+
+    def _optimize_single_group(
+        self,
+        features_orig: np.ndarray,
+        group_name: str,
+        n_trials: int,
+    ) -> Dict:
+        """优化单个参数组"""
+        group_info = self.group_indices[group_name]
+        indices = group_info["indices"]
+        params = group_info["params"]
+
+        # 获取当前值和边界
+        current_values = np.array([features_orig[-1, idx] for idx in indices])
+        bounds = self._build_group_bounds(group_name, current_values)
+
+        # 创建优化器
+        sampler = self.optuna.samplers.TPESampler(multivariate=True)
+        study = self.optuna.create_study(
+            direction="minimize",
+            sampler=sampler,
+        )
+
+        # 目标函数：针对该组的特定目标
+        target_type = group_info["info"]["target"]
+
+        def objective(trial):
+            # 采样该组参数
+            control_values = []
+            for i, (param, bound) in enumerate(zip(params, bounds)):
+                value = trial.suggest_float(param, bound[0], bound[1])
+                control_values.append(value)
+
+            # 更新特征
+            features = features_orig.copy()
+            for i, idx in enumerate(indices):
+                features[-1, idx] = control_values[i]
+
+            # 预测
+            predictions = self._predict(features)
+            pressure_pred = predictions[:, 0]
+            oxygen_pred = predictions[:, 1]
+
+            # 根据组目标计算损失
+            if target_type == "oxygen":
+                # 氧含量优化组
+                loss = np.mean((oxygen_pred - self.config.oxygen_target) ** 2)
+                # 加入稳定性约束
+                loss += np.var(oxygen_pred) * self.config.stability_weight
+                # 加入平滑性约束
+                loss += np.sum((np.array(control_values) - current_values) ** 2) * self.config.smoothness_weight
+            elif target_type == "pressure":
+                # 负压优化组
+                loss = np.mean((pressure_pred - self.config.pressure_target) ** 2)
+                # 加入稳定性约束
+                loss += np.var(pressure_pred) * self.config.stability_weight
+                # 加入平滑性约束
+                loss += np.sum((np.array(control_values) - current_values) ** 2) * self.config.smoothness_weight
+            else:
+                # 综合目标
+                loss = self._compute_group_loss(
+                    np.array(control_values), features_orig, current_values
+                )
+
+            return loss
+
+        # 运行优化
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+        # 提取最优结果
+        best_trial = study.best_trial
+        optimal_values = {param: best_trial.params[param] for param in params}
+        adjustments = {param: best_trial.params[param] - features_orig[-1, indices[i]]
+                      for i, param in enumerate(params)}
+
+        return {
+            "optimal_values": optimal_values,
+            "adjustments": adjustments,
+            "loss": best_trial.value,
+            "n_trials": n_trials,
+        }
+
+    def _parallel_group_optimize(
+        self,
+        features_orig: np.ndarray,
+        n_trials: int,
+    ) -> Dict:
+        """并行优化多个参数组"""
+        group_results = {}
+
+        # 对每个组独立优化（基于原始特征）
+        for group_name in ["pressure", "oxygen"]:
+            if group_name not in self.group_indices:
+                continue
+
+            result = self._optimize_single_group(features_orig, group_name, n_trials)
+            group_results[group_name] = result
+
+        return group_results
+
+    def _build_group_bounds(
+        self,
+        group_name: str,
+        current_values: np.ndarray,
+    ) -> List[Tuple[float, float]]:
+        """构建参数组的优化边界"""
+        bounds = []
+        group_info = self.group_indices[group_name]
+
+        for i, param in enumerate(group_info["params"]):
+            current = current_values[i]
+            # 硬物理边界
+            lower_hard, upper_hard = self.config.control_bounds.get(param, (0, 1000))
+
+            # 软约束
+            max_adj = max(abs(current) * self.config.max_adjustment_ratio,
+                         self.config.min_adjustment)
+
+            lower_soft = current - max_adj
+            upper_soft = current + max_adj
+
+            lower = max(lower_hard, lower_soft)
+            upper = min(upper_hard, upper_soft)
+
+            if lower > upper:
+                lower = max(lower_hard, current - self.config.min_adjustment)
+                upper = min(upper_hard, current + self.config.min_adjustment)
+                if lower > upper:
+                    lower = lower_hard
+                    upper = upper_hard
+
+            bounds.append((float(lower), float(upper)))
+
+        return bounds
+
+    def _compute_group_loss(
+        self,
+        control_values: np.ndarray,
+        base_features: np.ndarray,
+        current_values: np.ndarray,
+    ) -> float:
+        """计算综合损失"""
+        features = base_features.copy()
+
+        # 更新控制参数
+        for i, idx in enumerate(self.control_indices):
+            features[-1, idx] = control_values[i]
+
+        predictions = self._predict(features)
+        pressure_pred = predictions[:, 0]
+        oxygen_pred = predictions[:, 1]
+
+        # 综合损失
+        pressure_loss = np.mean(
+            (pressure_pred - self.config.pressure_target) ** 2
+        ) * self.config.pressure_weight
+
+        oxygen_loss = np.mean(
+            (oxygen_pred - self.config.oxygen_target) ** 2
+        ) * self.config.oxygen_weight
+
+        stability_loss = (
+            np.var(pressure_pred) + np.var(oxygen_pred)
+        ) * self.config.stability_weight
+
+        smoothness_loss = np.sum(
+            (control_values - current_values) ** 2
+        ) * self.config.smoothness_weight
+
+        return pressure_loss + oxygen_loss + stability_loss + smoothness_loss
+
+    def get_group_info(self) -> Dict:
+        """获取参数分组信息"""
+        return {
+            "defined_groups": self.CONTROL_GROUPS,
+            "available_groups": self.group_indices,
+            "feature_names": self.feature_names,
+        }
+
+
+# =============================================================================
+# 两阶段混合优化器 (Hierarchical + Bayesian)
+# =============================================================================
+
+class HybridTwoStageOptimizer(BaseOptimizer):
+    """
+    两阶段混合优化器 - 结合分组优化和全参数优化的优势
+
+    策略:
+    1. 第一阶段（粗调）：分组优化快速找到大致优化方向
+    2. 第二阶段（精调）：基于粗调结果进行全参数精细调整
+
+    优势:
+    - 粗调阶段：低维搜索，快速收敛到好的区域
+    - 精调阶段：捕捉参数耦合效应，精细优化
+    - 兼顾效率和效果
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        scaler: Any,
+        target_scaler: Any,
+        feature_names: List[str],
+        config: Optional[OptimizationConfig] = None,
+    ):
+        super().__init__(model, scaler, target_scaler, feature_names, config)
+
+        # 导入 optuna
+        try:
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            self.optuna = optuna
+        except ImportError:
+            raise ImportError("请安装 optuna: pip install optuna")
+
+        # 初始化子优化器
+        self.hierarchical_optimizer = HierarchicalBayesianOptimizer(
+            model, scaler, target_scaler, feature_names, config
+        )
+        self.bayesian_optimizer = BayesianOptimizer(
+            model, scaler, target_scaler, feature_names, config
+        )
+
+    def optimize(
+        self,
+        features_orig: np.ndarray,
+        coarse_trials: int = 20,
+        fine_trials: int = 30,
+        coarse_strategy: str = "sequential",
+    ) -> OptimizationResult:
+        """
+        两阶段混合优化
+
+        Args:
+            features_orig: 原始特征数组
+            coarse_trials: 粗调阶段每组试验次数
+            fine_trials: 精调阶段试验次数
+            coarse_strategy: 粗调阶段策略 (sequential/parallel/pressure_first)
+
+        Returns:
+            OptimizationResult: 优化结果
+        """
+        start_time = time.time()
+
+        current_values = self.get_current_control_values(features_orig)
+        predictions_before = self._predict(features_orig)
+        loss_before = self._compute_loss(current_values, features_orig, current_values)
+
+        logger.info("=" * 50)
+        logger.info("两阶段混合优化开始")
+        logger.info("=" * 50)
+
+        # ================== 第一阶段：粗调 ==================
+        logger.info(f"【第一阶段-粗调】分组优化 (每组{coarse_trials}次试验)")
+        coarse_result = self.hierarchical_optimizer.optimize(
+            features_orig,
+            strategy=coarse_strategy,
+            n_trials_per_group=coarse_trials,
+        )
+
+        logger.info(f"  粗调损失改善: {coarse_result.improvement_ratio:.2%}")
+        logger.info(f"  粗调耗时: {coarse_result.elapsed_time:.2f}s")
+
+        # 基于粗调结果更新特征
+        features_coarse = features_orig.copy()
+        for param, value in coarse_result.optimal_values.items():
+            if param in self.feature_to_idx:
+                features_coarse[-1, self.feature_to_idx[param]] = value
+
+        # ================== 第二阶段：精调 ==================
+        logger.info(f"【第二阶段-精调】全参数优化 ({fine_trials}次试验)")
+
+        # 获取粗调后的控制参数值作为精调的初始点
+        coarse_values = np.array([
+            coarse_result.optimal_values.get(ctrl, features_orig[-1, self.feature_to_idx.get(ctrl, 0)])
+            for ctrl in self.control_param_names
+        ])
+
+        # 构建精调的边界（基于粗调结果，缩小搜索范围）
+        fine_bounds = self._build_fine_bounds(coarse_values, shrink_ratio=0.5)
+
+        # 运行精调优化
+        fine_result = self._run_fine_optimization(
+            features_coarse, fine_bounds, fine_trials, coarse_values
+        )
+
+        logger.info(f"  精调损失改善: {fine_result['improvement']:.2%}")
+        logger.info(f"  精调耗时: {fine_result['elapsed_time']:.2f}s")
+
+        # ================== 合并结果 ==================
+        optimal_values = fine_result["optimal_values"]
+        adjustments = {
+            ctrl: optimal_values[ctrl] - current_values[i]
+            for i, ctrl in enumerate(self.control_param_names)
+        }
+
+        # 计算最终预测
+        features_optimized = features_orig.copy()
+        for i, idx in enumerate(self.control_indices):
+            features_optimized[-1, idx] = optimal_values[self.control_param_names[i]]
+
+        predictions_after = self._predict(features_optimized)
+        loss_after = fine_result["loss"]
+
+        elapsed_time = time.time() - start_time
+        improvement = max(0, (loss_before - loss_after) / (loss_before + 1e-8))
+
+        logger.info("=" * 50)
+        logger.info(f"两阶段混合优化完成")
+        logger.info(f"  总损失改善: {improvement:.2%}")
+        logger.info(f"  总耗时: {elapsed_time:.2f}s")
+        logger.info("=" * 50)
+
+        return OptimizationResult(
+            optimal_values=optimal_values,
+            adjustments=adjustments,
+            predicted_pressure=predictions_after[:, 0],
+            predicted_oxygen=predictions_after[:, 1],
+            loss_before=float(loss_before),
+            loss_after=float(loss_after),
+            improvement_ratio=float(improvement),
+            method=f"Hybrid-TwoStage",
+            converged=True,
+            n_evaluations=coarse_result.n_evaluations + fine_result["n_evaluations"],
+            elapsed_time=elapsed_time,
+            predictions_before=predictions_before,
+            predictions_after=predictions_after,
+        )
+
+    def _build_fine_bounds(
+        self,
+        coarse_values: np.ndarray,
+        shrink_ratio: float = 0.5,
+    ) -> List[Tuple[float, float]]:
+        """
+        构建精调阶段的边界
+
+        基于粗调结果，缩小搜索范围以提高精调效率
+        """
+        bounds = []
+        for i, ctrl in enumerate(self.control_param_names):
+            coarse_val = coarse_values[i]
+
+            # 硬物理边界
+            lower_hard, upper_hard = self.config.control_bounds.get(ctrl, (0, 1000))
+
+            # 基于粗调结果缩小的范围
+            # 使用原始允许调整范围的 shrink_ratio
+            max_adj = max(abs(coarse_val) * self.config.max_adjustment_ratio,
+                         self.config.min_adjustment)
+            fine_range = max_adj * shrink_ratio
+
+            lower = max(lower_hard, coarse_val - fine_range)
+            upper = min(upper_hard, coarse_val + fine_range)
+
+            # 确保边界有效
+            if lower > upper:
+                lower = lower_hard
+                upper = upper_hard
+
+            bounds.append((float(lower), float(upper)))
+
+        return bounds
+
+    def _run_fine_optimization(
+        self,
+        features_coarse: np.ndarray,
+        bounds: List[Tuple[float, float]],
+        n_trials: int,
+        coarse_values: np.ndarray,
+    ) -> Dict:
+        """运行精调阶段的全参数优化"""
+        start_time = time.time()
+
+        # 创建优化器
+        sampler = self.optuna.samplers.TPESampler(multivariate=True)
+        study = self.optuna.create_study(
+            direction="minimize",
+            sampler=sampler,
+        )
+
+        # 计算粗调后的损失作为基准
+        loss_coarse = self._compute_loss(coarse_values, features_coarse, coarse_values)
+
+        def objective(trial):
+            # 采样控制参数
+            control_values = []
+            for i, (ctrl, bound) in enumerate(zip(self.control_param_names, bounds)):
+                value = trial.suggest_float(ctrl, bound[0], bound[1])
+                control_values.append(value)
+
+            return self._compute_loss(
+                np.array(control_values), features_coarse, coarse_values
+            )
+
+        # 运行优化
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+
+        # 提取最优结果
+        best_trial = study.best_trial
+        optimal_values = {
+            ctrl: best_trial.params[ctrl]
+            for ctrl in self.control_param_names
+        }
+        loss_after = best_trial.value
+
+        elapsed_time = time.time() - start_time
+        improvement = max(0, (loss_coarse - loss_after) / (loss_coarse + 1e-8))
+
+        return {
+            "optimal_values": optimal_values,
+            "loss": loss_after,
+            "improvement": improvement,
+            "n_evaluations": n_trials,
+            "elapsed_time": elapsed_time,
+        }
+
+    def get_optimization_info(self) -> Dict:
+        """获取优化器信息"""
+        return {
+            "type": "Two-Stage Hybrid",
+            "stage1": {
+                "name": "Hierarchical Optimization",
+                "purpose": "快速粗调，定位优化区域",
+                "groups": self.hierarchical_optimizer.CONTROL_GROUPS,
+            },
+            "stage2": {
+                "name": "Bayesian Optimization",
+                "purpose": "精细调整，捕捉参数耦合",
+            },
+        }
+
+
+# =============================================================================
 # 工厂函数
 # =============================================================================
 
@@ -1312,16 +1652,14 @@ def create_optimizer(
 
     if method == "bayesian" or method == "TPE":
         return BayesianOptimizer(model, scaler, target_scaler, feature_names, config)
-    elif method == "gradient":
-        return GradientOptimizer(model, scaler, target_scaler, feature_names, config)
+    elif method == "hierarchical" or method == "grouped":
+        return HierarchicalBayesianOptimizer(model, scaler, target_scaler, feature_names, config)
+    elif method == "hybrid_two_stage" or method == "two_stage":
+        return HybridTwoStageOptimizer(model, scaler, target_scaler, feature_names, config)
     elif method == "multi-objective" or method == "NSGA-II":
         return MultiObjectiveOptimizer(model, scaler, target_scaler, feature_names, config)
-    elif method == "hybrid":
-        return HybridOptimizer(model, scaler, target_scaler, feature_names, config)
-    elif method == "mpc":
-        return RollingHorizonOptimizer(model, scaler, target_scaler, feature_names, config)
     else:
-        return HybridOptimizer(model, scaler, target_scaler, feature_names, config)
+        raise ValueError(f"未知的优化方法: {method}")
 
 
 __all__ = [
@@ -1331,10 +1669,9 @@ __all__ = [
     "SceneDetector",
     "BaseOptimizer",
     "BayesianOptimizer",
+    "HierarchicalBayesianOptimizer",
+    "HybridTwoStageOptimizer",
     "MultiObjectiveOptimizer",
-    "GradientOptimizer",
-    "HybridOptimizer",
-    "RollingHorizonOptimizer",
     "ControlRecommender",
     "create_optimizer",
 ]

@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src.utils.config import EXPERT_RANGES, FAN_EXPERT_RANGES, KEY_PARAMS, TARGET_VARIABLES
+from src.utils.config import (
+    EXPERT_RANGES,
+    FAN_EXPERT_RANGES,
+    KEY_PARAMS,
+    TARGET_VARIABLES,
+)
 
 plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -55,11 +60,30 @@ class PlotGenerator:
         print(f"图表已保存至: {path}")
         return str(path)
 
+    def _add_hist_percent_labels(self, ax, data, bins=100):
+        n, bins_out, patches = ax.hist(
+            data, bins=bins, color="steelblue", alpha=0.7, edgecolor="white"
+        )
+        total = len(data)
+        for i in range(len(patches)):
+            if n[i] > 0:
+                percent = n[i] / total * 100
+                ax.text(
+                    (bins_out[i] + bins_out[i + 1]) / 2,
+                    n[i],
+                    f"{percent:.1f}%",
+                    ha="center",
+                    va="bottom",
+                    fontsize=6,
+                    rotation=90,
+                )
+        return n, bins_out, patches
+
     def _plot_pressure_distribution(self, fig: plt.Figure, pos: int) -> None:
         ax = fig.add_subplot(2, 3, pos)
         if TARGET_VARIABLES[0] in self.df.columns:
             data = self.df[TARGET_VARIABLES[0]].dropna()
-            ax.hist(data, bins=100, color="steelblue", alpha=0.7, edgecolor="white")
+            self._add_hist_percent_labels(ax, data, bins=100)
             ax.axvline(
                 x=-80, color="green", linestyle="--", linewidth=2, label="Ideal Range"
             )
@@ -74,7 +98,9 @@ class PlotGenerator:
         ax = fig.add_subplot(2, 3, pos)
         if TARGET_VARIABLES[4] in self.df.columns:
             data = self.df[TARGET_VARIABLES[4]].dropna()
-            ax.hist(data, bins=100, color="coral", alpha=0.7, edgecolor="white")
+            self._add_hist_percent_labels(ax, data, bins=100)
+            for patch in ax.patches:
+                patch.set_facecolor("coral")
             ax.axvline(
                 x=2.0, color="red", linestyle="--", linewidth=2, label="Target: 2.0%"
             )
@@ -89,7 +115,9 @@ class PlotGenerator:
         ax = fig.add_subplot(2, 3, pos)
         if "D62AX002" in self.df.columns:
             data = self.df["D62AX002"].dropna()
-            ax.hist(data, bins=100, color="forestgreen", alpha=0.7, edgecolor="white")
+            self._add_hist_percent_labels(ax, data, bins=100)
+            for patch in ax.patches:
+                patch.set_facecolor("forestgreen")
             ax.set_xlabel("Coal Feed Rate (t/h)")
             ax.set_ylabel("Frequency")
             ax.set_title("Coal Feed Rate Distribution")
@@ -143,7 +171,7 @@ class PlotGenerator:
         ax = fig.add_subplot(3, 3, pos)
         if TARGET_VARIABLES[0] in self.df.columns:
             data = self.df[TARGET_VARIABLES[0]].dropna()
-            ax.hist(data, bins=100, color="steelblue", alpha=0.7, edgecolor="white")
+            self._add_hist_percent_labels(ax, data, bins=100)
             ax.axvline(
                 x=-80, color="green", linestyle="--", linewidth=2, label="Ideal Range"
             )

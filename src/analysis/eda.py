@@ -3,7 +3,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.utils.config import EXPERT_RANGES, KEY_PARAMS, KEY_PARAMS_FOR_STATS, TARGET_VARIABLES
+from src.utils.config import EXPERT_RANGES, KEY_PARAMS, PARAMS_FOR_STATS, TARGET_VARIABLES
 from src.utils.utils import compute_in_range_ratio, print_section
 
 
@@ -244,7 +244,7 @@ class StatisticsCalculator:
     def calculate_key_params_stats(
         self, params: list[str] | None = None
     ) -> pd.DataFrame:
-        params = params or KEY_PARAMS_FOR_STATS + TARGET_VARIABLES
+        params = params or PARAMS_FOR_STATS + TARGET_VARIABLES
         stats_df = pd.DataFrame()
         for param in params:
             if param in self.df.columns:

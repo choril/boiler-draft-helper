@@ -9,9 +9,10 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List
 from src.utils.logger import get_logger
+from src.utils.config import UNIMPORTANT_PARAMS
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
-from event_period_cleaner import EventPeriodCleaner, load_intervention_records
+from src.event_period_cleaner import EventPeriodCleaner, load_intervention_records
 
 
 LOGGER = get_logger()
@@ -30,10 +31,12 @@ class Config:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.param_file = self._find_param_file()
+        self.unimportant_params = UNIMPORTANT_PARAMS
 
         LOGGER.info(f"数据目录：{self.data_dir}")
         LOGGER.info(f"参数文件：{self.param_file}")
         LOGGER.info(f"输出目录：{self.output_dir}")
+        LOGGER.info(f"非重要参数共 {len(self.unimportant_params)} 个")
 
     def _find_param_file(self) -> Path:
         """查找参数文件"""
@@ -422,7 +425,7 @@ class DataCleaner:
         df.sort_values(by="TIME", inplace=True)
         df.reset_index(drop=True, inplace=True)
 
-        LOGGER.info(f"数据标准化完成：{len(df.columns)} 列，{len(df)} 行")
+        LOGGER.info(f"数据标准化完成：{len(df)} 行，{len(df.columns)} 列")
 
 
 class DataSaver:
@@ -514,6 +517,10 @@ class DataPipeline:
         if raw_data.empty:
             LOGGER.error("未加载到任何有效数据")
             return
+        LOGGER.info(f"原始数据加载完成：{len(raw_data)} 行，{len(raw_data.columns)} 列")
+        # 移除非重要列
+        raw_data = raw_data.drop(columns=self.config.unimportant_params, errors="ignore")
+        LOGGER.info(f"已移除非重要参数列，剩余 {len(raw_data.columns)} 列")
 
         if event_clean_method != "none":
             LOGGER.info(f"开始特殊工况期数据清洗 (方法: {event_clean_method})...")
