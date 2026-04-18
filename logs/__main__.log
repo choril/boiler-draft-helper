@@ -1,9 +1,0 @@
-2026-04-14 00:54:28 - __main__ - INFO - train_narx.py:66 - 使用GPU: NVIDIA GeForce RTX 4090 D
-2026-04-14 00:54:28 - __main__ - INFO - train_narx.py:91 - 构建MPC样本...
-2026-04-14 01:05:53 - __main__ - INFO - train_narx.py:117 - 样本已缓存: output/models/narx_lstm/samples_cache_jump150.0.npz
-2026-04-14 01:05:53 - __main__ - INFO - train_narx.py:125 - 划分数据集...
-2026-04-14 01:05:54 - __main__ - INFO - train_narx.py:181 - 数据集大小:
-2026-04-14 01:05:54 - __main__ - INFO - train_narx.py:182 -   训练集: 217332
-2026-04-14 01:05:54 - __main__ - INFO - train_narx.py:183 -   验证集: 46571
-2026-04-14 01:05:54 - __main__ - INFO - train_narx.py:184 -   测试集: 46572
-2026-04-14 01:05:55 - __main__ - INFO - train_narx.py:214 - 使用物理约束损失，权重: 0.2

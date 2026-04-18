@@ -14,13 +14,13 @@ from typing import Final
 
 WINDOW_CONFIG: Final[dict] = {
     # 历史窗口长度（分钟）
-    "history_length": 30,  # L = 30（增大，让模型看到更多历史信息）
+    "history_length": 15,  # L = 15
 
     # 预测步长（分钟）
     "prediction_horizon": 5,  # H = 5
 
     # 数据采样间隔（秒）
-    "sampling_interval": 60,  # 60秒 = 1分钟
+    "sampling_interval": 60,  # 1分钟
 
     # 步长（构建序列时的步长，用于控制样本数量）
     "stride": 1,
@@ -72,6 +72,32 @@ NARX_LSTM_CONFIG: Final[dict] = {
 
     # 多步预测权重（近期权重更高）
     "step_weights": [1.0, 0.9, 0.8, 0.7, 0.6],  # H=5时的权重
+}
+
+
+# ========== 直接多步预测模型配置 ==========
+
+DIRECT_PREDICTOR_CONFIG: Final[dict] = {
+    "encoder_hidden": 256,
+    "encoder_layers": 2,
+    "d_model": 128,
+    "n_heads": 4,
+    "control_hidden": 64,
+    "decoder_layers": 2,
+    "output_steps": H,
+    "dropout": 0.2,
+    "use_residual": True,
+
+    "learning_rate": 0.001,
+    "weight_decay": 1e-4,
+    "batch_size": 64,
+    "epochs": 100,
+    "early_stop_patience": 15,
+
+    "step_weights": [1.0, 0.95, 0.9, 0.85, 0.8],
+
+    "physics_weight": 0.1,
+    "scheduled_sampling": False,
 }
 
 
@@ -245,13 +271,22 @@ __all__ = [
     "H",
     "DATA_SPLIT_CONFIG",
     "NARX_LSTM_CONFIG",
+    "DIRECT_PREDICTOR_CONFIG",
     "TFT_CONFIG",
     "PROXY_MLP_CONFIG",
     "PHYSICS_LOSS_CONFIG",
     "MPC_CONFIG",
     "SAVE_CONFIG",
     "get_narx_lstm_config",
+    "get_direct_predictor_config",
     "get_tft_config",
     "get_proxy_config",
     "get_mpc_config",
 ]
+
+
+def get_direct_predictor_config(**overrides) -> dict:
+    """获取直接多步预测模型配置"""
+    config = DIRECT_PREDICTOR_CONFIG.copy()
+    config.update(overrides)
+    return config

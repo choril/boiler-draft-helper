@@ -61,8 +61,8 @@ class NARXLSTM(nn.Module):
         self.n_features = n_y + n_u + n_x  # 输入特征总数
         self.encoder_hidden = encoder_hidden
         self.decoder_hidden = decoder_hidden
-        self.encoder_layers = encoder_layers  # 新增：存储层数
-        self.decoder_layers = decoder_layers  # 新增：存储层数
+        self.encoder_layers = encoder_layers
+        self.decoder_layers = decoder_layers
         self.output_steps = output_steps
         self.bidirectional = bidirectional
 
@@ -300,12 +300,16 @@ class NARXLSTMTrainer:
         self,
         train_loader,
         teacher_forcing_ratio: float = 0.5,
+        epoch: int = 0,
+        verbose: bool = True,
     ) -> float:
         """训练一个epoch
 
         Args:
             train_loader: 训练数据加载器
             teacher_forcing_ratio: teacher forcing概率
+            epoch: 当前epoch编号（用于日志）
+            verbose: 是否打印batch进度日志
 
         Returns:
             avg_loss: 平均损失
@@ -313,8 +317,12 @@ class NARXLSTMTrainer:
         self.model.train()
         total_loss = 0.0
         n_batches = 0
+        n_total_batches = len(train_loader)
 
-        for batch in train_loader:
+        # 每隔多少个batch打印一次进度（约打印10次）
+        log_interval = max(1, n_total_batches // 10)
+
+        for batch_idx, batch in enumerate(train_loader):
             encoder_input = batch['encoder_input'].to(self.device)
             decoder_input = batch['decoder_input'].to(self.device)
             target = batch['target'].to(self.device)
@@ -340,6 +348,12 @@ class NARXLSTMTrainer:
 
             total_loss += loss.item()
             n_batches += 1
+
+            # 打印batch进度
+            if verbose and (batch_idx + 1) % log_interval == 0:
+                avg_loss_so_far = total_loss / n_batches
+                progress = (batch_idx + 1) / n_total_batches * 100
+                logger.info(f"  Epoch {epoch} - Batch {batch_idx+1}/{n_total_batches} ({progress:.0f}%) - Loss: {loss.item():.4f} (avg: {avg_loss_so_far:.4f})")
 
         return total_loss / n_batches
 
@@ -397,10 +411,16 @@ class NARXLSTMTrainer:
 
         logger.info("开始NARX-LSTM训练")
         logger.info(f"最大epochs: {epochs}, 早停patience: {patience}")
+        logger.info(f"总batch数: {len(train_loader)}")
 
         for epoch in range(epochs):
-            # 训练
-            train_loss = self.train_epoch(train_loader, teacher_forcing_ratio)
+            # 训练（传入epoch编号用于batch进度日志）
+            train_loss = self.train_epoch(
+                train_loader,
+                teacher_forcing_ratio,
+                epoch=epoch + 1,
+                verbose=verbose,
+            )
             history['train_loss'].append(train_loss)
 
             # 验证
@@ -409,16 +429,19 @@ class NARXLSTMTrainer:
 
             # 学习率调度
             self.scheduler.step(val_loss)
+            current_lr = self.optimizer.param_groups[0]['lr']
 
-            # 打印日志
+            # 打印epoch总结日志
             if verbose:
-                logger.info(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                logger.info(f"Epoch {epoch+1}/{epochs} 完成 - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
 
             # 保存最佳模型
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.best_model_state = self.model.state_dict().copy()
                 epochs_no_improve = 0
+                if verbose:
+                    logger.info(f"  ✓ 新最佳模型，验证损失: {val_loss:.4f}")
             else:
                 epochs_no_improve += 1
 

@@ -1,0 +1,26 @@
+# 锅炉机组含氧量和炉膛压力预测 - 依赖包
+
+# 数据处理
+pandas>=1.5.0
+numpy>=1.23.0
+pyarrow>=10.0.0
+
+# 机器学习
+scikit-learn>=1.2.0
+lightgbm>=3.3.0
+xgboost>=1.7.0
+
+# 深度学习（可选，用于LSTM/Transformer）
+tensorflow>=2.10.0
+# torch>=1.13.0
+
+# 可视化
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# 超参数优化
+optuna>=3.0.0
+
+# 工具
+python-dateutil>=2.8.0
+tqdm>=4.64.0
